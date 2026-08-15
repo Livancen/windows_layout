@@ -20,7 +20,7 @@ BOOL CALLBACK MonitorManager::EnumProc(HMONITOR hMon, HDC, LPRECT, LPARAM lParam
     wchar_t buf[256];
     const int w = mi.rcMonitor.right - mi.rcMonitor.left;
     const int h = mi.rcMonitor.bottom - mi.rcMonitor.top;
-    swprintf_s(buf, L"屏幕 %d%s  %dx%d  (%d,%d)",
+    swprintf_s(buf, L"屏幕 %d%ls  %dx%d  (%d,%d)",
                info.index + 1,
                info.primary ? L" [主]" : L"",
                w, h,

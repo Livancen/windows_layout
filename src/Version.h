@@ -1,7 +1,7 @@
 #pragma once
 
 #ifndef APP_VERSION
-#define APP_VERSION "0.1.3"
+#define APP_VERSION "0.1.4"
 #endif
 
 #ifndef APP_REPO_OWNER

@@ -64,7 +64,7 @@ int App::Run(HINSTANCE hInstance, int nCmdShow) {
 
 bool App::CreateMainWindow(int nCmdShow) {
     wchar_t title[128];
-    swprintf_s(title, L"窗口布局管理器  v%s", UpdateManager::CurrentVersion().c_str());
+    swprintf_s(title, L"窗口布局管理器  v%ls", UpdateManager::CurrentVersion().c_str());
 
     hwndMain_ = CreateWindowExW(
         0, kClassName, title,
@@ -442,7 +442,7 @@ void App::OnWindowSelect() {
     const AppWindow* info = windowMgr_.FindByHwnd(selectedHwnd_);
     if (info) {
         wchar_t buf[256];
-        swprintf_s(buf, L"已选择: %s (%s)", info->title.c_str(), info->processName.c_str());
+        swprintf_s(buf, L"已选择: %ls (%ls)", info->title.c_str(), info->processName.c_str());
         SetStatus(buf);
     }
     InvalidateRect(hwndList_, nullptr, FALSE);
@@ -502,7 +502,7 @@ void App::OnApply() {
     if (ok) {
         selectedHwnd_ = hwnd;
         wchar_t buf[160];
-        swprintf_s(buf, L"已应用: %s → %s",
+        swprintf_s(buf, L"已应用: %ls → %ls",
                    MonitorManager::PresetName(preset), mon->displayName.c_str());
         SetStatus(buf);
         RefreshListKeepSelection();
@@ -542,7 +542,7 @@ void App::OnUpdateCheckDone(UpdateInfo* info) {
     if (!info->error.empty() && info->downloadUrl.empty()) {
         wchar_t msg[512];
         swprintf_s(msg,
-                   L"检查更新失败：%s\n\n是否在浏览器中打开发布页手动下载？\n%s",
+                   L"检查更新失败：%ls\n\n是否在浏览器中打开发布页手动下载？\n%ls",
                    info->error.c_str(), info->releasePageUrl.c_str());
         SetStatus(L"检查更新失败");
         if (MessageBoxW(hwndMain_, msg, L"检查更新", MB_YESNO | MB_ICONWARNING) == IDYES) {
@@ -555,7 +555,7 @@ void App::OnUpdateCheckDone(UpdateInfo* info) {
 
     if (!info->available) {
         wchar_t msg[256];
-        swprintf_s(msg, L"当前已是最新版本。\n\n当前版本：%s\n最新版本：%s",
+        swprintf_s(msg, L"当前已是最新版本。\n\n当前版本：%ls\n最新版本：%ls",
                    info->currentVersion.c_str(),
                    info->latestVersion.empty() ? info->currentVersion.c_str() : info->latestVersion.c_str());
         SetStatus(L"已是最新版本");
@@ -567,7 +567,7 @@ void App::OnUpdateCheckDone(UpdateInfo* info) {
 
     wchar_t msg[512];
     swprintf_s(msg,
-               L"发现新版本！\n\n当前版本：%s\n最新版本：%s\n发布：%s\n\n是否立即下载并安装？",
+               L"发现新版本！\n\n当前版本：%ls\n最新版本：%ls\n发布：%ls\n\n是否立即下载并安装？",
                info->currentVersion.c_str(),
                info->latestVersion.c_str(),
                info->releaseName.c_str());
@@ -606,7 +606,7 @@ void App::OnUpdateDownloadDone(UpdateDownloadResult* result) {
 
         wchar_t msg[768];
         swprintf_s(msg,
-                   L"下载更新失败：%s\n\n你可以在浏览器中手动下载安装包。\n是否打开下载页面？",
+                   L"下载更新失败：%ls\n\n你可以在浏览器中手动下载安装包。\n是否打开下载页面？",
                    result->error.empty() ? L"未知错误" : result->error.c_str());
         SetStatus(L"下载更新失败");
         if (MessageBoxW(hwndMain_, msg, L"更新失败", MB_YESNO | MB_ICONWARNING) == IDYES) {
@@ -625,7 +625,7 @@ void App::OnUpdateDownloadDone(UpdateDownloadResult* result) {
     if (!UpdateManager::ApplyAndRestart(result->zipPath, err)) {
         wchar_t msg[768];
         swprintf_s(msg,
-                   L"安装更新失败：%s\n\n是否在浏览器中打开下载页手动安装？",
+                   L"安装更新失败：%ls\n\n是否在浏览器中打开下载页手动安装？",
                    err.empty() ? L"未知错误" : err.c_str());
         SetStatus(L"安装更新失败");
         if (MessageBoxW(hwndMain_, msg, L"更新失败", MB_YESNO | MB_ICONWARNING) == IDYES) {
