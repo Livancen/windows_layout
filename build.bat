@@ -7,7 +7,7 @@ set LLVMRC="C:\Program Files\LLVM\bin\llvm-rc.exe"
 set OUT=build\WindowLayout.exe
 set RES=build\app.res
 set SRC=src\main.cpp src\App.cpp src\WindowManager.cpp src\MonitorManager.cpp src\UpdateManager.cpp
-if not defined APP_VERSION set APP_VERSION=0.1.2
+if not defined APP_VERSION set APP_VERSION=0.1.3
 
 if not exist build mkdir build
 

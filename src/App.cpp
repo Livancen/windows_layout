@@ -64,7 +64,7 @@ int App::Run(HINSTANCE hInstance, int nCmdShow) {
 
 bool App::CreateMainWindow(int nCmdShow) {
     wchar_t title[128];
-    swprintf_s(title, L"窗口布局管理器 - Window Layout  v%s", UpdateManager::CurrentVersion().c_str());
+    swprintf_s(title, L"窗口布局管理器  v%s", UpdateManager::CurrentVersion().c_str());
 
     hwndMain_ = CreateWindowExW(
         0, kClassName, title,
