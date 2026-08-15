@@ -34,4 +34,5 @@ target_link_libraries(WindowLayout PRIVATE
     ole32
     dwmapi
     shcore
+    psapi
 )
