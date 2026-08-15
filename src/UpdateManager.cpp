@@ -395,84 +395,134 @@ std::string EscapePowerShellSingleQuoted(const std::string& s) {
     return out;
 }
 
-bool WriteUpdaterScript(const fs::path& script, DWORD pid,
-                        const fs::path& newExe, const fs::path& targetExe, std::wstring& error) {
-    std::ofstream ofs(script, std::ios::binary);
-    if (!ofs) {
+bool WriteUtf16LeBomFile(const fs::path& path, const std::wstring& content, std::wstring& error) {
+    HANDLE h = CreateFileW(path.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS,
+                           FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (h == INVALID_HANDLE_VALUE) {
         error = L"无法创建更新脚本";
         return false;
     }
-
-    // Robust Windows self-replace:
-    // 1) wait until old process fully exits
-    // 2) rename running image to .old (unlocks path better than overwrite)
-    // 3) copy new file into place and verify size
-    // 4) only then relaunch; never start old binary on failure
-    const std::string newPath = EscapePowerShellSingleQuoted(WideToUtf8(newExe.wstring()));
-    const std::string targetPath = EscapePowerShellSingleQuoted(WideToUtf8(targetExe.wstring()));
-
-    std::ostringstream ps;
-    ps
-        << "$ErrorActionPreference = 'Stop'\r\n"
-        << "$pidToWait = " << pid << "\r\n"
-        << "$newExe = '" << newPath << "'\r\n"
-        << "$target = '" << targetPath << "'\r\n"
-        << "$bak = $target + '.old'\r\n"
-        << "$log = Join-Path $env:TEMP 'WindowLayoutUpdate\\update.log'\r\n"
-        << "function Log([string]$m) { Add-Content -LiteralPath $log -Value ((Get-Date -Format o) + ' ' + $m) -ErrorAction SilentlyContinue }\r\n"
-        << "Log ('wait pid=' + $pidToWait)\r\n"
-        << "for ($i = 0; $i -lt 120; $i++) {\r\n"
-        << "  if (-not (Get-Process -Id $pidToWait -ErrorAction SilentlyContinue)) { break }\r\n"
-        << "  Start-Sleep -Milliseconds 250\r\n"
-        << "}\r\n"
-        << "Start-Sleep -Milliseconds 500\r\n"
-        << "$ok = $false\r\n"
-        << "$lastErr = ''\r\n"
-        << "for ($i = 0; $i -lt 40; $i++) {\r\n"
-        << "  try {\r\n"
-        << "    if (-not (Test-Path -LiteralPath $newExe)) { throw 'new exe missing' }\r\n"
-        << "    $srcLen = (Get-Item -LiteralPath $newExe).Length\r\n"
-        << "    if ($srcLen -lt 64) { throw 'new exe too small' }\r\n"
-        << "    if (Test-Path -LiteralPath $bak) { Remove-Item -LiteralPath $bak -Force -ErrorAction SilentlyContinue }\r\n"
-        << "    if (Test-Path -LiteralPath $target) {\r\n"
-        << "      Rename-Item -LiteralPath $target -NewName ([IO.Path]::GetFileName($bak)) -Force\r\n"
-        << "    }\r\n"
-        << "    Copy-Item -LiteralPath $newExe -Destination $target -Force\r\n"
-        << "    $dstLen = (Get-Item -LiteralPath $target).Length\r\n"
-        << "    if ($dstLen -ne $srcLen) { throw ('size mismatch src=' + $srcLen + ' dst=' + $dstLen) }\r\n"
-        << "    $ok = $true\r\n"
-        << "    Log ('replace ok size=' + $dstLen)\r\n"
-        << "    break\r\n"
-        << "  } catch {\r\n"
-        << "    $lastErr = $_.Exception.Message\r\n"
-        << "    Log ('retry ' + $i + ' ' + $lastErr)\r\n"
-        << "    # try restore original if rename succeeded but copy failed\r\n"
-        << "    if ((-not (Test-Path -LiteralPath $target)) -and (Test-Path -LiteralPath $bak)) {\r\n"
-        << "      try { Rename-Item -LiteralPath $bak -NewName ([IO.Path]::GetFileName($target)) -Force } catch {}\r\n"
-        << "    }\r\n"
-        << "    Start-Sleep -Milliseconds 400\r\n"
-        << "  }\r\n"
-        << "}\r\n"
-        << "if ($ok) {\r\n"
-        << "  try { Start-Process -FilePath $target } catch { Log ('start failed ' + $_.Exception.Message) }\r\n"
-        << "  Remove-Item -LiteralPath $bak -Force -ErrorAction SilentlyContinue\r\n"
-        << "  Remove-Item -LiteralPath $newExe -Force -ErrorAction SilentlyContinue\r\n"
-        << "} else {\r\n"
-        << "  Log ('FAILED ' + $lastErr)\r\n"
-        << "  try {\r\n"
-        << "    Add-Type -AssemblyName System.Windows.Forms\r\n"
-        << "    [System.Windows.Forms.MessageBox]::Show(\r\n"
-        << "      ('自动更新失败，未能替换程序文件。\\n' + $lastErr + '\\n\\n请关闭程序后手动下载安装。'),\r\n"
-        << "      'WindowLayout 更新失败',\r\n"
-        << "      'OK',\r\n"
-        << "      'Error') | Out-Null\r\n"
-        << "  } catch {}\r\n"
-        << "}\r\n"
-        << "Remove-Item -LiteralPath $MyInvocation.MyCommand.Path -Force -ErrorAction SilentlyContinue\r\n";
-
-    const std::string content = ps.str();
-    ofs.write(content.data(), static_cast<std::streamsize>(content.size()));
+    const WORD bom = 0xFEFF;
+    DWORD written = 0;
+    if (!WriteFile(h, &bom, sizeof(bom), &written, nullptr)) {
+        CloseHandle(h);
+        error = L"无法写入更新脚本";
+        return false;
+    }
+    const DWORD bytes = static_cast<DWORD>(content.size() * sizeof(wchar_t));
+    if (!WriteFile(h, content.data(), bytes, &written, nullptr) || written != bytes) {
+        CloseHandle(h);
+        error = L"无法写入更新脚本";
+        return false;
+    }
+    CloseHandle(h);
     return true;
+}
+
+bool WriteUpdaterScript(const fs::path& script, DWORD pid,
+                        const fs::path& newExe, const fs::path& targetExe, std::wstring& error) {
+    auto escape = [](const std::wstring& s) {
+        std::wstring o;
+        o.reserve(s.size() + 8);
+        for (wchar_t c : s) {
+            if (c == L'\'') o += L"''";
+            else o.push_back(c);
+        }
+        return o;
+    };
+
+    // Robust Windows self-replace (UTF-16 LE script for PowerShell 5.1):
+    // 1) wait until old process fully exits and file lock drops
+    // 2) move old image to .old, copy new file, verify size
+    // 3) relaunch with multiple fallbacks; never relaunch if replace failed
+    std::wostringstream ps;
+    ps
+        << L"$ErrorActionPreference = 'Continue'\r\n"
+        << L"$pidToWait = " << pid << L"\r\n"
+        << L"$newExe = '" << escape(newExe.wstring()) << L"'\r\n"
+        << L"$target = '" << escape(targetExe.wstring()) << L"'\r\n"
+        << L"$bak = $target + '.old'\r\n"
+        << L"$workDir = Split-Path -Parent $target\r\n"
+        << L"$logDir = Join-Path $env:TEMP 'WindowLayoutUpdate'\r\n"
+        << L"New-Item -ItemType Directory -Force -Path $logDir | Out-Null\r\n"
+        << L"$log = Join-Path $logDir 'update.log'\r\n"
+        << L"function Log([string]$m) { try { Add-Content -LiteralPath $log -Value ((Get-Date -Format o) + ' ' + $m) } catch {} }\r\n"
+        << L"Log ('updater start pid=' + $pidToWait)\r\n"
+        << L"Log ('new=' + $newExe)\r\n"
+        << L"Log ('target=' + $target)\r\n"
+        << L"for ($i = 0; $i -lt 200; $i++) {\r\n"
+        << L"  if (-not (Get-Process -Id $pidToWait -ErrorAction SilentlyContinue)) { break }\r\n"
+        << L"  Start-Sleep -Milliseconds 100\r\n"
+        << L"}\r\n"
+        << L"Start-Sleep -Milliseconds 800\r\n"
+        << L"$ok = $false\r\n"
+        << L"$lastErr = ''\r\n"
+        << L"for ($i = 0; $i -lt 50; $i++) {\r\n"
+        << L"  try {\r\n"
+        << L"    if (-not (Test-Path -LiteralPath $newExe)) { throw 'new exe missing' }\r\n"
+        << L"    $srcLen = [int64](Get-Item -LiteralPath $newExe).Length\r\n"
+        << L"    if ($srcLen -lt 1024) { throw 'new exe too small' }\r\n"
+        << L"    if (Test-Path -LiteralPath $bak) { Remove-Item -LiteralPath $bak -Force -ErrorAction Stop }\r\n"
+        << L"    if (Test-Path -LiteralPath $target) { Move-Item -LiteralPath $target -Destination $bak -Force -ErrorAction Stop }\r\n"
+        << L"    Copy-Item -LiteralPath $newExe -Destination $target -Force -ErrorAction Stop\r\n"
+        << L"    $dstLen = [int64](Get-Item -LiteralPath $target).Length\r\n"
+        << L"    if ($dstLen -ne $srcLen) { throw ('size mismatch src=' + $srcLen + ' dst=' + $dstLen) }\r\n"
+        << L"    $ok = $true\r\n"
+        << L"    Log ('replace ok size=' + $dstLen + ' try=' + $i)\r\n"
+        << L"    break\r\n"
+        << L"  } catch {\r\n"
+        << L"    $lastErr = $_.Exception.Message\r\n"
+        << L"    Log ('retry ' + $i + ' ' + $lastErr)\r\n"
+        << L"    if ((-not (Test-Path -LiteralPath $target)) -and (Test-Path -LiteralPath $bak)) {\r\n"
+        << L"      try { Move-Item -LiteralPath $bak -Destination $target -Force } catch { Log ('restore failed ' + $_.Exception.Message) }\r\n"
+        << L"    }\r\n"
+        << L"    Start-Sleep -Milliseconds 300\r\n"
+        << L"  }\r\n"
+        << L"}\r\n"
+        << L"if ($ok) {\r\n"
+        << L"  Start-Sleep -Milliseconds 400\r\n"
+        << L"  $launched = $false\r\n"
+        << L"  try {\r\n"
+        << L"    $p = Start-Process -FilePath $target -WorkingDirectory $workDir -PassThru\r\n"
+        << L"    if ($p) { $launched = $true; Log ('start Start-Process ok pid=' + $p.Id) }\r\n"
+        << L"  } catch { Log ('Start-Process failed ' + $_.Exception.Message) }\r\n"
+        << L"  if (-not $launched) {\r\n"
+        << L"    try {\r\n"
+        << L"      $args = '/c start \"\" \"' + $target + '\"'\r\n"
+        << L"      Start-Process -FilePath $env:ComSpec -ArgumentList $args -WorkingDirectory $workDir -WindowStyle Hidden\r\n"
+        << L"      $launched = $true\r\n"
+        << L"      Log 'start cmd ok'\r\n"
+        << L"    } catch { Log ('cmd start failed ' + $_.Exception.Message) }\r\n"
+        << L"  }\r\n"
+        << L"  if (-not $launched) {\r\n"
+        << L"    try {\r\n"
+        << L"      Start-Process -FilePath 'explorer.exe' -ArgumentList $target\r\n"
+        << L"      $launched = $true\r\n"
+        << L"      Log 'start explorer ok'\r\n"
+        << L"    } catch { Log ('explorer start failed ' + $_.Exception.Message) }\r\n"
+        << L"  }\r\n"
+        << L"  if (-not $launched) {\r\n"
+        << L"    try {\r\n"
+        << L"      Add-Type -AssemblyName System.Windows.Forms\r\n"
+        << L"      [System.Windows.Forms.MessageBox]::Show(\r\n"
+        << L"        ('更新文件已替换，但自动启动失败。`r`n请手动打开：`r`n' + $target),\r\n"
+        << L"        'WindowLayout 更新','OK','Warning') | Out-Null\r\n"
+        << L"    } catch {}\r\n"
+        << L"  }\r\n"
+        << L"  Remove-Item -LiteralPath $bak -Force -ErrorAction SilentlyContinue\r\n"
+        << L"  Remove-Item -LiteralPath $newExe -Force -ErrorAction SilentlyContinue\r\n"
+        << L"} else {\r\n"
+        << L"  Log ('FAILED ' + $lastErr)\r\n"
+        << L"  try {\r\n"
+        << L"    Add-Type -AssemblyName System.Windows.Forms\r\n"
+        << L"    [System.Windows.Forms.MessageBox]::Show(\r\n"
+        << L"      ('自动更新失败，未能替换程序文件。`r`n' + $lastErr + '`r`n`r`n请手动下载安装新版本。`r`n日志: ' + $log),\r\n"
+        << L"      'WindowLayout 更新失败','OK','Error') | Out-Null\r\n"
+        << L"  } catch {}\r\n"
+        << L"}\r\n"
+        << L"Remove-Item -LiteralPath $PSCommandPath -Force -ErrorAction SilentlyContinue\r\n";
+
+    return WriteUtf16LeBomFile(script, ps.str(), error);
 }
 
 struct ReleasePick {
@@ -691,24 +741,45 @@ bool UpdateManager::ApplyAndRestart(const std::wstring& zipPath, std::wstring& e
     DWORD pid = GetCurrentProcessId();
     if (!WriteUpdaterScript(script, pid, staged, target, error)) return false;
 
+    // Launch updater fully detached from this GUI process/job so it survives exit.
+    wchar_t comspec[MAX_PATH]{};
+    DWORD n = GetEnvironmentVariableW(L"ComSpec", comspec, MAX_PATH);
+    if (n == 0 || n >= MAX_PATH) {
+        wcscpy_s(comspec, L"C:\\Windows\\System32\\cmd.exe");
+    }
+
+    // cmd /c start launches a separate process tree; PowerShell keeps running after app exits.
+    std::wstring cmd = std::wstring(L"\"") + comspec
+        + L"\" /c start \"\" /b powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File \""
+        + script.wstring() + L"\"";
+    std::vector<wchar_t> mutableCmd(cmd.begin(), cmd.end());
+    mutableCmd.push_back(L'\0');
+
     STARTUPINFOW si{};
     si.cb = sizeof(si);
     si.dwFlags = STARTF_USESHOWWINDOW;
     si.wShowWindow = SW_HIDE;
     PROCESS_INFORMATION pi{};
-    // Use -File so script path with spaces works; keep a visible-less console.
-    std::wstring cmd = L"powershell -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File \""
-        + script.wstring() + L"\"";
-    std::vector<wchar_t> mutableCmd(cmd.begin(), cmd.end());
-    mutableCmd.push_back(L'\0');
 
+    DWORD flags = CREATE_NO_WINDOW | DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP;
     if (!CreateProcessW(nullptr, mutableCmd.data(), nullptr, nullptr, FALSE,
-                        CREATE_NO_WINDOW, nullptr, nullptr, &si, &pi)) {
-        error = L"无法启动更新程序";
-        return false;
+                        flags, nullptr, nullptr, &si, &pi)) {
+        // Fallback: direct powershell without cmd/start.
+        std::wstring fallback = L"powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File \""
+            + script.wstring() + L"\"";
+        std::vector<wchar_t> fb(fallback.begin(), fallback.end());
+        fb.push_back(L'\0');
+        if (!CreateProcessW(nullptr, fb.data(), nullptr, nullptr, FALSE,
+                            CREATE_NO_WINDOW | DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP,
+                            nullptr, nullptr, &si, &pi)) {
+            error = L"无法启动更新程序";
+            return false;
+        }
     }
     CloseHandle(pi.hThread);
     CloseHandle(pi.hProcess);
+    // Give updater a brief head start before the app tears down.
+    Sleep(300);
     return true;
 }
 
