@@ -2,6 +2,7 @@
 
 #include <windows.h>
 #include <commctrl.h>
+#include <cstdint>
 #include "WindowManager.h"
 #include "MonitorManager.h"
 #include "UpdateManager.h"
@@ -27,6 +28,10 @@ private:
     void StartAutoUpdateCheck();
     void OnUpdateCheckDone(UpdateInfo* info);
     void OnUpdateDownloadDone(struct UpdateDownloadResult* result);
+    void OnUpdateProgress(std::uint64_t received, std::uint64_t total, const wchar_t* status);
+    bool CreateProgressDialog(const std::wstring& version);
+    void CloseProgressDialog();
+    void SetProgressText(const wchar_t* text);
     void FillCoordsFromSelection();
     void FillCoordsFromPreset();
     void SetCoordInputs(int x, int y, int w, int h);
@@ -42,6 +47,7 @@ private:
     LRESULT OnListCustomDraw(LPNMLVCUSTOMDRAW cd);
 
     static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam);
+    static LRESULT CALLBACK ProgressWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam);
     LRESULT HandleMessage(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam);
 
     HINSTANCE hInst_ = nullptr;
@@ -62,6 +68,11 @@ private:
     HWND hwndLabelW_ = nullptr;
     HWND hwndLabelH_ = nullptr;
 
+    HWND hwndProgressDlg_ = nullptr;
+    HWND hwndProgressBar_ = nullptr;
+    HWND hwndProgressText_ = nullptr;
+    HWND hwndProgressDetail_ = nullptr;
+
     WindowManager windowMgr_;
     MonitorManager monitorMgr_;
     HWND selectedHwnd_ = nullptr;
@@ -70,6 +81,7 @@ private:
     bool updateBusy_ = false;
 
     static constexpr wchar_t kClassName[] = L"WindowLayoutMainClass";
+    static constexpr wchar_t kProgressClassName[] = L"WindowLayoutProgressClass";
     static constexpr int kIdList = 1001;
     static constexpr int kIdMonitors = 1002;
     static constexpr int kIdPresets = 1003;
@@ -83,4 +95,11 @@ private:
     static constexpr UINT kRefreshIntervalMs = 2000;
     static constexpr UINT WM_APP_UPDATE_CHECK = WM_APP + 1;
     static constexpr UINT WM_APP_UPDATE_DOWNLOAD = WM_APP + 2;
+    static constexpr UINT WM_APP_UPDATE_PROGRESS = WM_APP + 3;
+};
+
+struct UpdateProgressMsg {
+    std::uint64_t received = 0;
+    std::uint64_t total = 0;
+    std::wstring status;
 };

@@ -123,15 +123,26 @@ bool IsFormalVersionTag(const std::wstring& tag) {
     return tag[1] >= L'0' && tag[1] <= L'9';
 }
 
-bool HttpGet(const std::wstring& host, const std::wstring& path, bool https,
-             const std::wstring& userAgent, std::string& body, std::wstring& error,
-             const std::wstring& accept = L"application/vnd.github+json") {
-    body.clear();
-    HINTERNET hSession = WinHttpOpen(userAgent.c_str(),
-                                     WINHTTP_ACCESS_TYPE_DEFAULT_PROXY,
-                                     WINHTTP_NO_PROXY_NAME,
-                                     WINHTTP_NO_PROXY_BYPASS, 0);
-    if (!hSession) {
+struct HttpSession {
+    HINTERNET session = nullptr;
+    HINTERNET connect = nullptr;
+    HINTERNET request = nullptr;
+
+    ~HttpSession() {
+        if (request) WinHttpCloseHandle(request);
+        if (connect) WinHttpCloseHandle(connect);
+        if (session) WinHttpCloseHandle(session);
+    }
+};
+
+bool HttpOpenGet(const std::wstring& host, const std::wstring& path, bool https,
+                 const std::wstring& userAgent, const std::wstring& accept,
+                 HttpSession& s, DWORD& status, std::wstring& error) {
+    s.session = WinHttpOpen(userAgent.c_str(),
+                            WINHTTP_ACCESS_TYPE_DEFAULT_PROXY,
+                            WINHTTP_NO_PROXY_NAME,
+                            WINHTTP_NO_PROXY_BYPASS, 0);
+    if (!s.session) {
         error = L"无法初始化网络组件";
         return false;
     }
@@ -140,84 +151,85 @@ bool HttpGet(const std::wstring& host, const std::wstring& path, bool https,
 #if defined(WINHTTP_FLAG_SECURE_PROTOCOL_TLS1_3)
     protocols |= WINHTTP_FLAG_SECURE_PROTOCOL_TLS1_3;
 #endif
-    WinHttpSetOption(hSession, WINHTTP_OPTION_SECURE_PROTOCOLS, &protocols, sizeof(protocols));
+    WinHttpSetOption(s.session, WINHTTP_OPTION_SECURE_PROTOCOLS, &protocols, sizeof(protocols));
 
-    // Follow redirects for GitHub asset CDN.
     DWORD redirectPolicy = WINHTTP_OPTION_REDIRECT_POLICY_ALWAYS;
-    WinHttpSetOption(hSession, WINHTTP_OPTION_REDIRECT_POLICY, &redirectPolicy, sizeof(redirectPolicy));
+    WinHttpSetOption(s.session, WINHTTP_OPTION_REDIRECT_POLICY, &redirectPolicy, sizeof(redirectPolicy));
 
-    HINTERNET hConnect = WinHttpConnect(hSession, host.c_str(),
-                                        https ? INTERNET_DEFAULT_HTTPS_PORT : INTERNET_DEFAULT_HTTP_PORT, 0);
-    if (!hConnect) {
+    s.connect = WinHttpConnect(s.session, host.c_str(),
+                               https ? INTERNET_DEFAULT_HTTPS_PORT : INTERNET_DEFAULT_HTTP_PORT, 0);
+    if (!s.connect) {
         error = L"无法连接服务器";
-        WinHttpCloseHandle(hSession);
         return false;
     }
 
     DWORD flags = https ? WINHTTP_FLAG_SECURE : 0;
-    HINTERNET hRequest = WinHttpOpenRequest(hConnect, L"GET", path.c_str(),
-                                            nullptr, WINHTTP_NO_REFERER,
-                                            WINHTTP_DEFAULT_ACCEPT_TYPES, flags);
-    if (!hRequest) {
+    s.request = WinHttpOpenRequest(s.connect, L"GET", path.c_str(),
+                                   nullptr, WINHTTP_NO_REFERER,
+                                   WINHTTP_DEFAULT_ACCEPT_TYPES, flags);
+    if (!s.request) {
         error = L"无法创建请求";
-        WinHttpCloseHandle(hConnect);
-        WinHttpCloseHandle(hSession);
         return false;
     }
 
     std::wstring headers = L"Accept: " + accept + L"\r\nX-GitHub-Api-Version: 2022-11-28\r\n";
-    BOOL ok = WinHttpSendRequest(hRequest, headers.c_str(), static_cast<DWORD>(-1L),
+    BOOL ok = WinHttpSendRequest(s.request, headers.c_str(), static_cast<DWORD>(-1L),
                                  WINHTTP_NO_REQUEST_DATA, 0, 0, 0);
-    if (ok) ok = WinHttpReceiveResponse(hRequest, nullptr);
+    if (ok) ok = WinHttpReceiveResponse(s.request, nullptr);
     if (!ok) {
         error = L"网络请求失败";
-        WinHttpCloseHandle(hRequest);
-        WinHttpCloseHandle(hConnect);
-        WinHttpCloseHandle(hSession);
         return false;
     }
 
-    DWORD status = 0;
+    status = 0;
     DWORD statusSize = sizeof(status);
-    WinHttpQueryHeaders(hRequest,
+    WinHttpQueryHeaders(s.request,
                         WINHTTP_QUERY_STATUS_CODE | WINHTTP_QUERY_FLAG_NUMBER,
                         WINHTTP_HEADER_NAME_BY_INDEX, &status, &statusSize, WINHTTP_NO_HEADER_INDEX);
-
-    std::string data;
-    for (;;) {
-        DWORD avail = 0;
-        if (!WinHttpQueryDataAvailable(hRequest, &avail)) {
-            error = L"读取响应失败";
-            WinHttpCloseHandle(hRequest);
-            WinHttpCloseHandle(hConnect);
-            WinHttpCloseHandle(hSession);
-            return false;
-        }
-        if (avail == 0) break;
-        std::vector<char> buf(avail);
-        DWORD read = 0;
-        if (!WinHttpReadData(hRequest, buf.data(), avail, &read)) {
-            error = L"下载数据失败";
-            WinHttpCloseHandle(hRequest);
-            WinHttpCloseHandle(hConnect);
-            WinHttpCloseHandle(hSession);
-            return false;
-        }
-        data.append(buf.data(), read);
-    }
-
-    WinHttpCloseHandle(hRequest);
-    WinHttpCloseHandle(hConnect);
-    WinHttpCloseHandle(hSession);
-
     if (status < 200 || status >= 300) {
         wchar_t msg[128];
         swprintf_s(msg, L"服务器返回错误 %lu", status);
         error = msg;
         return false;
     }
+    return true;
+}
 
-    body = std::move(data);
+std::uint64_t QueryContentLength(HINTERNET request) {
+    wchar_t buf[64]{};
+    DWORD size = sizeof(buf);
+    if (!WinHttpQueryHeaders(request, WINHTTP_QUERY_CONTENT_LENGTH,
+                             WINHTTP_HEADER_NAME_BY_INDEX, buf, &size, WINHTTP_NO_HEADER_INDEX)) {
+        return 0;
+    }
+    return static_cast<std::uint64_t>(_wcstoui64(buf, nullptr, 10));
+}
+
+bool HttpGet(const std::wstring& host, const std::wstring& path, bool https,
+             const std::wstring& userAgent, std::string& body, std::wstring& error,
+             const std::wstring& accept = L"application/vnd.github+json") {
+    body.clear();
+    HttpSession s;
+    DWORD status = 0;
+    if (!HttpOpenGet(host, path, https, userAgent, accept, s, status, error)) {
+        return false;
+    }
+
+    for (;;) {
+        DWORD avail = 0;
+        if (!WinHttpQueryDataAvailable(s.request, &avail)) {
+            error = L"读取响应失败";
+            return false;
+        }
+        if (avail == 0) break;
+        std::vector<char> buf(avail);
+        DWORD read = 0;
+        if (!WinHttpReadData(s.request, buf.data(), avail, &read)) {
+            error = L"下载数据失败";
+            return false;
+        }
+        body.append(buf.data(), read);
+    }
     return true;
 }
 
@@ -243,16 +255,16 @@ bool HttpDownloadFile(const std::wstring& url, const fs::path& dest,
     std::wstring fullPath = std::wstring(path) + extra;
     bool https = (uc.nScheme == INTERNET_SCHEME_HTTPS);
 
-    if (progress) progress(L"正在下载更新...");
+    if (progress) progress(0, 0, L"正在连接服务器...");
 
-    std::string body;
-    if (!HttpGet(host, fullPath, https, L"WindowLayout-Updater", body, error, L"*/*")) {
+    HttpSession s;
+    DWORD status = 0;
+    if (!HttpOpenGet(host, fullPath, https, L"WindowLayout-Updater", L"*/*", s, status, error)) {
         return false;
     }
-    if (body.size() < 64) {
-        error = L"下载内容异常（文件过小）";
-        return false;
-    }
+
+    const std::uint64_t total = QueryContentLength(s.request);
+    if (progress) progress(0, total, L"正在下载更新...");
 
     std::error_code ec;
     fs::create_directories(dest.parent_path(), ec);
@@ -261,18 +273,46 @@ bool HttpDownloadFile(const std::wstring& url, const fs::path& dest,
         error = L"无法写入临时文件";
         return false;
     }
-    ofs.write(body.data(), static_cast<std::streamsize>(body.size()));
+
+    std::uint64_t received = 0;
+    std::uint64_t lastReport = 0;
+    for (;;) {
+        DWORD avail = 0;
+        if (!WinHttpQueryDataAvailable(s.request, &avail)) {
+            error = L"读取响应失败";
+            return false;
+        }
+        if (avail == 0) break;
+
+        std::vector<char> buf(avail);
+        DWORD read = 0;
+        if (!WinHttpReadData(s.request, buf.data(), avail, &read) || read == 0) {
+            error = L"下载数据失败";
+            return false;
+        }
+        ofs.write(buf.data(), static_cast<std::streamsize>(read));
+        if (!ofs) {
+            error = L"保存下载文件失败";
+            return false;
+        }
+        received += read;
+
+        // Throttle UI updates roughly every 32 KB or at completion.
+        if (progress && (received - lastReport >= 32 * 1024 || (total > 0 && received >= total))) {
+            lastReport = received;
+            progress(received, total, L"正在下载更新...");
+        }
+    }
     ofs.close();
     if (!ofs) {
         error = L"保存下载文件失败";
         return false;
     }
-
-    if (progress) {
-        wchar_t buf[64];
-        swprintf_s(buf, L"已下载 %.1f MB", body.size() / (1024.0 * 1024.0));
-        progress(buf);
+    if (received < 64) {
+        error = L"下载内容异常（文件过小）";
+        return false;
     }
+    if (progress) progress(received, total > 0 ? total : received, L"下载完成");
     return true;
 }
 
@@ -503,7 +543,7 @@ std::wstring UpdateManager::DownloadUpdate(const UpdateInfo& info, ProgressFn pr
         error = L"没有下载地址";
         return {};
     }
-    if (progress) progress(L"正在下载更新...");
+    if (progress) progress(0, 0, L"正在下载更新...");
 
     fs::path dir = TempUpdateDir();
     std::error_code ec;

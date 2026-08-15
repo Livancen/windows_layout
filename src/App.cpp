@@ -25,7 +25,7 @@ App& App::Instance() {
 int App::Run(HINSTANCE hInstance, int nCmdShow) {
     hInst_ = hInstance;
 
-    INITCOMMONCONTROLSEX icc{ sizeof(icc), ICC_LISTVIEW_CLASSES | ICC_BAR_CLASSES | ICC_STANDARD_CLASSES };
+    INITCOMMONCONTROLSEX icc{ sizeof(icc), ICC_LISTVIEW_CLASSES | ICC_BAR_CLASSES | ICC_STANDARD_CLASSES | ICC_PROGRESS_CLASS };
     InitCommonControlsEx(&icc);
 
     HICON hIcon = static_cast<HICON>(LoadImageW(
@@ -513,6 +513,133 @@ void App::SetUpdateBusy(bool busy) {
     EnableWindow(hwndBtnApply_, busy ? FALSE : TRUE);
 }
 
+void App::SetProgressText(const wchar_t* text) {
+    if (hwndProgressText_ && text) {
+        SetWindowTextW(hwndProgressText_, text);
+    }
+}
+
+void App::CloseProgressDialog() {
+    if (hwndProgressDlg_) {
+        DestroyWindow(hwndProgressDlg_);
+        hwndProgressDlg_ = nullptr;
+        hwndProgressBar_ = nullptr;
+        hwndProgressText_ = nullptr;
+        hwndProgressDetail_ = nullptr;
+    }
+    EnableWindow(hwndMain_, TRUE);
+    SetForegroundWindow(hwndMain_);
+}
+
+LRESULT CALLBACK App::ProgressWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
+    switch (msg) {
+    case WM_CLOSE:
+        // Block closing while download is running.
+        return 0;
+    case WM_DESTROY:
+        return 0;
+    }
+    return DefWindowProcW(hwnd, msg, wParam, lParam);
+}
+
+bool App::CreateProgressDialog(const std::wstring& version) {
+    CloseProgressDialog();
+
+    static bool registered = false;
+    if (!registered) {
+        WNDCLASSEXW wc{};
+        wc.cbSize = sizeof(wc);
+        wc.lpfnWndProc = ProgressWndProc;
+        wc.hInstance = hInst_;
+        wc.hCursor = LoadCursor(nullptr, IDC_ARROW);
+        wc.hbrBackground = reinterpret_cast<HBRUSH>(COLOR_WINDOW + 1);
+        wc.lpszClassName = kProgressClassName;
+        if (!RegisterClassExW(&wc) && GetLastError() != ERROR_CLASS_ALREADY_EXISTS) {
+            return false;
+        }
+        registered = true;
+    }
+
+    const int dlgW = 420;
+    const int dlgH = 170;
+    RECT rc{};
+    GetWindowRect(hwndMain_, &rc);
+    const int x = rc.left + ((rc.right - rc.left) - dlgW) / 2;
+    const int y = rc.top + ((rc.bottom - rc.top) - dlgH) / 2;
+
+    const std::wstring title = L"正在更新到 v" + version;
+    hwndProgressDlg_ = CreateWindowExW(
+        WS_EX_DLGMODALFRAME | WS_EX_TOPMOST,
+        kProgressClassName, title.c_str(),
+        WS_POPUP | WS_CAPTION | WS_SYSMENU,
+        x, y, dlgW, dlgH,
+        hwndMain_, nullptr, hInst_, nullptr);
+    if (!hwndProgressDlg_) return false;
+
+    HFONT font = static_cast<HFONT>(GetStockObject(DEFAULT_GUI_FONT));
+
+    hwndProgressText_ = CreateWindowW(L"STATIC", L"正在准备下载...",
+                                      WS_CHILD | WS_VISIBLE | SS_LEFT,
+                                      20, 20, dlgW - 50, 22,
+                                      hwndProgressDlg_, nullptr, hInst_, nullptr);
+    SendMessageW(hwndProgressText_, WM_SETFONT, reinterpret_cast<WPARAM>(font), TRUE);
+
+    hwndProgressBar_ = CreateWindowExW(0, PROGRESS_CLASSW, nullptr,
+                                       WS_CHILD | WS_VISIBLE,
+                                       20, 55, dlgW - 50, 22,
+                                       hwndProgressDlg_, nullptr, hInst_, nullptr);
+    SendMessageW(hwndProgressBar_, PBM_SETRANGE, 0, MAKELPARAM(0, 1000));
+    SendMessageW(hwndProgressBar_, PBM_SETPOS, 0, 0);
+    // Marquee until total size is known.
+    SetWindowLongPtrW(hwndProgressBar_, GWL_STYLE,
+                      GetWindowLongPtrW(hwndProgressBar_, GWL_STYLE) | PBS_MARQUEE);
+    SendMessageW(hwndProgressBar_, PBM_SETMARQUEE, TRUE, 30);
+
+    hwndProgressDetail_ = CreateWindowW(L"STATIC", L"",
+                                        WS_CHILD | WS_VISIBLE | SS_LEFT,
+                                        20, 90, dlgW - 50, 22,
+                                        hwndProgressDlg_, nullptr, hInst_, nullptr);
+    SendMessageW(hwndProgressDetail_, WM_SETFONT, reinterpret_cast<WPARAM>(font), TRUE);
+
+    EnableWindow(hwndMain_, FALSE);
+    ShowWindow(hwndProgressDlg_, SW_SHOW);
+    UpdateWindow(hwndProgressDlg_);
+    return true;
+}
+
+void App::OnUpdateProgress(std::uint64_t received, std::uint64_t total, const wchar_t* status) {
+    if (!hwndProgressDlg_) return;
+
+    if (status && *status) {
+        SetProgressText(status);
+    }
+
+    if (total > 0) {
+        // Switch off marquee once size is known.
+        LONG_PTR style = GetWindowLongPtrW(hwndProgressBar_, GWL_STYLE);
+        if (style & PBS_MARQUEE) {
+            SendMessageW(hwndProgressBar_, PBM_SETMARQUEE, FALSE, 0);
+            SetWindowLongPtrW(hwndProgressBar_, GWL_STYLE, style & ~PBS_MARQUEE);
+            SendMessageW(hwndProgressBar_, PBM_SETRANGE, 0, MAKELPARAM(0, 1000));
+        }
+        int pos = static_cast<int>((received * 1000ull) / total);
+        if (pos > 1000) pos = 1000;
+        SendMessageW(hwndProgressBar_, PBM_SETPOS, pos, 0);
+
+        const double recvMb = received / (1024.0 * 1024.0);
+        const double totalMb = total / (1024.0 * 1024.0);
+        const int pct = static_cast<int>((received * 100ull) / total);
+        wchar_t detail[128];
+        swprintf_s(detail, L"%.2f / %.2f MB  (%d%%)", recvMb, totalMb, pct);
+        SetWindowTextW(hwndProgressDetail_, detail);
+    } else if (received > 0) {
+        const double recvMb = received / (1024.0 * 1024.0);
+        wchar_t detail[128];
+        swprintf_s(detail, L"已下载 %.2f MB", recvMb);
+        SetWindowTextW(hwndProgressDetail_, detail);
+    }
+}
+
 void App::StartAutoUpdateCheck() {
     if (updateBusy_) return;
     SetUpdateBusy(true);
@@ -558,6 +685,9 @@ void App::OnUpdateCheckDone(UpdateInfo* info) {
         return;
     }
 
+    if (!CreateProgressDialog(info->latestVersion)) {
+        SetStatus(L"无法显示更新进度窗口");
+    }
     SetStatus(L"正在下载更新...");
     HWND hwnd = hwndMain_;
     std::thread([hwnd, info]() {
@@ -565,20 +695,36 @@ void App::OnUpdateCheckDone(UpdateInfo* info) {
         result->info = *info;
         delete info;
         std::wstring err;
-        result->zipPath = UpdateManager::DownloadUpdate(result->info, nullptr, err);
+        auto progress = [hwnd](std::uint64_t received, std::uint64_t total, const wchar_t* status) {
+            auto* p = new UpdateProgressMsg();
+            p->received = received;
+            p->total = total;
+            if (status) p->status = status;
+            PostMessageW(hwnd, WM_APP_UPDATE_PROGRESS, 0, reinterpret_cast<LPARAM>(p));
+        };
+        result->zipPath = UpdateManager::DownloadUpdate(result->info, progress, err);
         result->error = err;
         result->ok = !result->zipPath.empty();
+        if (result->ok) {
+            auto* p = new UpdateProgressMsg();
+            p->received = 1;
+            p->total = 1;
+            p->status = L"正在安装更新...";
+            PostMessageW(hwnd, WM_APP_UPDATE_PROGRESS, 0, reinterpret_cast<LPARAM>(p));
+        }
         PostMessageW(hwnd, WM_APP_UPDATE_DOWNLOAD, 0, reinterpret_cast<LPARAM>(result));
     }).detach();
 }
 
 void App::OnUpdateDownloadDone(UpdateDownloadResult* result) {
     if (!result) {
+        CloseProgressDialog();
         SetUpdateBusy(false);
         return;
     }
 
     if (!result->ok) {
+        CloseProgressDialog();
         const std::wstring page = result->info.releasePageUrl.empty()
             ? UpdateManager::ReleasesPageUrl()
             : result->info.releasePageUrl;
@@ -600,8 +746,22 @@ void App::OnUpdateDownloadDone(UpdateDownloadResult* result) {
         return;
     }
 
+    SetProgressText(L"正在安装更新...");
+    if (hwndProgressDetail_) {
+        SetWindowTextW(hwndProgressDetail_, L"即将重启应用以完成安装");
+    }
+    if (hwndProgressBar_) {
+        LONG_PTR style = GetWindowLongPtrW(hwndProgressBar_, GWL_STYLE);
+        if (style & PBS_MARQUEE) {
+            SendMessageW(hwndProgressBar_, PBM_SETMARQUEE, FALSE, 0);
+            SetWindowLongPtrW(hwndProgressBar_, GWL_STYLE, style & ~PBS_MARQUEE);
+        }
+        SendMessageW(hwndProgressBar_, PBM_SETPOS, 1000, 0);
+    }
+
     std::wstring err;
     if (!UpdateManager::ApplyAndRestart(result->zipPath, err)) {
+        CloseProgressDialog();
         const std::wstring errText = err.empty() ? L"未知错误" : err;
         const std::wstring msg = L"安装更新失败：" + errText
             + L"\n\n是否在浏览器中打开下载页手动安装？";
@@ -620,6 +780,7 @@ void App::OnUpdateDownloadDone(UpdateDownloadResult* result) {
 
     SetStatus(L"即将重启以完成更新...");
     delete result;
+    // Keep progress dialog visible until process exits.
     DestroyWindow(hwndMain_);
 }
 
@@ -724,6 +885,15 @@ LRESULT App::HandleMessage(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
     case WM_APP_UPDATE_CHECK:
         OnUpdateCheckDone(reinterpret_cast<UpdateInfo*>(lParam));
         return 0;
+
+    case WM_APP_UPDATE_PROGRESS: {
+        auto* p = reinterpret_cast<UpdateProgressMsg*>(lParam);
+        if (p) {
+            OnUpdateProgress(p->received, p->total, p->status.c_str());
+            delete p;
+        }
+        return 0;
+    }
 
     case WM_APP_UPDATE_DOWNLOAD:
         OnUpdateDownloadDone(reinterpret_cast<UpdateDownloadResult*>(lParam));

@@ -3,6 +3,7 @@
 #include <windows.h>
 #include <string>
 #include <functional>
+#include <cstdint>
 
 struct UpdateInfo {
     bool available = false;
@@ -18,7 +19,8 @@ struct UpdateInfo {
 
 class UpdateManager {
 public:
-    using ProgressFn = std::function<void(const wchar_t* status)>;
+    // received / total (total may be 0 if unknown)
+    using ProgressFn = std::function<void(std::uint64_t received, std::uint64_t total, const wchar_t* status)>;
 
     static std::wstring CurrentVersion();
     static std::wstring ReleasesPageUrl();
