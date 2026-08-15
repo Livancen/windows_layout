@@ -4,9 +4,20 @@ project(WindowLayout LANGUAGES CXX)
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
-if(NOT DEFINED APP_VERSION)
-    set(APP_VERSION "0.1.5")
+# Version must be injected as a proper C string literal.
+# Do NOT pass it via target_compile_definitions: MSVC treats
+# /DAPP_VERSION=0.1.6 as a numeric macro (shows up as "0" in UI).
+if(NOT DEFINED APP_VERSION OR APP_VERSION STREQUAL "")
+    set(APP_VERSION "0.1.6")
 endif()
+
+set(GENERATED_DIR "${CMAKE_BINARY_DIR}/generated")
+file(MAKE_DIRECTORY "${GENERATED_DIR}")
+configure_file(
+    "${CMAKE_SOURCE_DIR}/src/Version.h.in"
+    "${GENERATED_DIR}/Version.h"
+    @ONLY
+)
 
 add_executable(WindowLayout WIN32
     src/main.cpp
@@ -17,14 +28,17 @@ add_executable(WindowLayout WIN32
     src/app.rc
 )
 
-target_include_directories(WindowLayout PRIVATE src)
+# Generated Version.h must win over src/Version.h
+target_include_directories(WindowLayout PRIVATE
+    "${GENERATED_DIR}"
+    src
+)
 
 target_compile_definitions(WindowLayout PRIVATE
     UNICODE
     _UNICODE
     WIN32_LEAN_AND_MEAN
     NOMINMAX
-    APP_VERSION="${APP_VERSION}"
 )
 
 if(MSVC)
@@ -44,3 +58,5 @@ target_link_libraries(WindowLayout PRIVATE
     psapi
     winhttp
 )
+
+message(STATUS "WindowLayout APP_VERSION=${APP_VERSION}")

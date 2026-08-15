@@ -441,10 +441,12 @@ bool PickRelease(const std::string& json, ReleasePick& out) {
 } // namespace
 
 std::wstring UpdateManager::CurrentVersion() {
-    // Build wide version from the narrow APP_VERSION macro without printf.
-    // (Clang's swprintf treats %s as char*, which previously truncated "0.1.x" to "0".)
+    // APP_VERSION must be a string literal from generated Version.h
+    // (never a numeric compile definition — MSVC turns 0.1.x into 0).
+    static_assert(sizeof(APP_VERSION) > 1, "APP_VERSION must be a non-empty string literal");
     const char* v = APP_VERSION;
     std::wstring out;
+    out.reserve(16);
     for (; *v; ++v) {
         out.push_back(static_cast<wchar_t>(static_cast<unsigned char>(*v)));
     }

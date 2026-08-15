@@ -29,7 +29,15 @@ jobs:
           Write-Host "APP_VERSION=$v"
 
       - name: Configure CMake
-        run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DAPP_VERSION=${{ steps.ver.outputs.app_version }}
+        shell: pwsh
+        run: |
+          $v = "${{ steps.ver.outputs.app_version }}"
+          Write-Host "Configuring with APP_VERSION=$v"
+          cmake -S . -B build -DCMAKE_BUILD_TYPE=Release "-DAPP_VERSION=$v"
+          if (-not (Test-Path "build\generated\Version.h")) {
+            throw "generated Version.h missing"
+          }
+          Get-Content "build\generated\Version.h" | Write-Host
 
       - name: Build
         run: cmake --build build --config Release
@@ -45,6 +53,11 @@ jobs:
           if (-not $exe) {
             Get-ChildItem -Recurse build -Filter *.exe | Format-Table FullName
             throw "WindowLayout.exe not found"
+          }
+          # Sanity: generated header must contain a quoted version string
+          $vh = Get-Content "build\generated\Version.h" -Raw
+          if ($vh -notmatch 'APP_VERSION\s+"[^"]+"') {
+            throw "APP_VERSION is not a quoted string in generated Version.h:`n$vh"
           }
           Copy-Item $exe dist\WindowLayout.exe
           Compress-Archive -Path dist\WindowLayout.exe -DestinationPath dist\WindowLayout-windows-x64.zip -Force
