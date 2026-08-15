@@ -441,7 +441,14 @@ bool PickRelease(const std::string& json, ReleasePick& out) {
 } // namespace
 
 std::wstring UpdateManager::CurrentVersion() {
-    return Utf8ToWide(APP_VERSION);
+    // Build wide version from the narrow APP_VERSION macro without printf.
+    // (Clang's swprintf treats %s as char*, which previously truncated "0.1.x" to "0".)
+    const char* v = APP_VERSION;
+    std::wstring out;
+    for (; *v; ++v) {
+        out.push_back(static_cast<wchar_t>(static_cast<unsigned char>(*v)));
+    }
+    return out;
 }
 
 std::wstring UpdateManager::ReleasesPageUrl() {

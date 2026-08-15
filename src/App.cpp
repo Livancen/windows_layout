@@ -63,11 +63,10 @@ int App::Run(HINSTANCE hInstance, int nCmdShow) {
 }
 
 bool App::CreateMainWindow(int nCmdShow) {
-    wchar_t title[128];
-    swprintf_s(title, L"窗口布局管理器  v%ls", UpdateManager::CurrentVersion().c_str());
+    const std::wstring title = L"窗口布局管理器  v" + UpdateManager::CurrentVersion();
 
     hwndMain_ = CreateWindowExW(
-        0, kClassName, title,
+        0, kClassName, title.c_str(),
         WS_OVERLAPPEDWINDOW,
         CW_USEDEFAULT, CW_USEDEFAULT, 960, 640,
         nullptr, nullptr, hInst_, this);
@@ -441,9 +440,8 @@ void App::OnWindowSelect() {
 
     const AppWindow* info = windowMgr_.FindByHwnd(selectedHwnd_);
     if (info) {
-        wchar_t buf[256];
-        swprintf_s(buf, L"已选择: %ls (%ls)", info->title.c_str(), info->processName.c_str());
-        SetStatus(buf);
+        const std::wstring status = L"已选择: " + info->title + L" (" + info->processName + L")";
+        SetStatus(status.c_str());
     }
     InvalidateRect(hwndList_, nullptr, FALSE);
 }
@@ -501,10 +499,9 @@ void App::OnApply() {
 
     if (ok) {
         selectedHwnd_ = hwnd;
-        wchar_t buf[160];
-        swprintf_s(buf, L"已应用: %ls → %ls",
-                   MonitorManager::PresetName(preset), mon->displayName.c_str());
-        SetStatus(buf);
+        const std::wstring status = std::wstring(L"已应用: ") + MonitorManager::PresetName(preset)
+            + L" → " + mon->displayName;
+        SetStatus(status.c_str());
         RefreshListKeepSelection();
         if (preset != MonitorManager::Custom) {
             FillCoordsFromPreset();
@@ -540,12 +537,10 @@ void App::OnUpdateCheckDone(UpdateInfo* info) {
     }
 
     if (!info->error.empty() && info->downloadUrl.empty()) {
-        wchar_t msg[512];
-        swprintf_s(msg,
-                   L"检查更新失败：%ls\n\n是否在浏览器中打开发布页手动下载？\n%ls",
-                   info->error.c_str(), info->releasePageUrl.c_str());
+        const std::wstring msg = L"检查更新失败：" + info->error
+            + L"\n\n是否在浏览器中打开发布页手动下载？\n" + info->releasePageUrl;
         SetStatus(L"检查更新失败");
-        if (MessageBoxW(hwndMain_, msg, L"检查更新", MB_YESNO | MB_ICONWARNING) == IDYES) {
+        if (MessageBoxW(hwndMain_, msg.c_str(), L"检查更新", MB_YESNO | MB_ICONWARNING) == IDYES) {
             UpdateManager::OpenInBrowser(info->releasePageUrl);
         }
         delete info;
@@ -554,25 +549,22 @@ void App::OnUpdateCheckDone(UpdateInfo* info) {
     }
 
     if (!info->available) {
-        wchar_t msg[256];
-        swprintf_s(msg, L"当前已是最新版本。\n\n当前版本：%ls\n最新版本：%ls",
-                   info->currentVersion.c_str(),
-                   info->latestVersion.empty() ? info->currentVersion.c_str() : info->latestVersion.c_str());
+        const std::wstring latest = info->latestVersion.empty() ? info->currentVersion : info->latestVersion;
+        const std::wstring msg = L"当前已是最新版本。\n\n当前版本：" + info->currentVersion
+            + L"\n最新版本：" + latest;
         SetStatus(L"已是最新版本");
-        MessageBoxW(hwndMain_, msg, L"检查更新", MB_OK | MB_ICONINFORMATION);
+        MessageBoxW(hwndMain_, msg.c_str(), L"检查更新", MB_OK | MB_ICONINFORMATION);
         delete info;
         SetUpdateBusy(false);
         return;
     }
 
-    wchar_t msg[512];
-    swprintf_s(msg,
-               L"发现新版本！\n\n当前版本：%ls\n最新版本：%ls\n发布：%ls\n\n是否立即下载并安装？",
-               info->currentVersion.c_str(),
-               info->latestVersion.c_str(),
-               info->releaseName.c_str());
+    const std::wstring msg = L"发现新版本！\n\n当前版本：" + info->currentVersion
+        + L"\n最新版本：" + info->latestVersion
+        + L"\n发布：" + info->releaseName
+        + L"\n\n是否立即下载并安装？";
     SetStatus(L"发现新版本");
-    if (MessageBoxW(hwndMain_, msg, L"检查更新", MB_YESNO | MB_ICONQUESTION) != IDYES) {
+    if (MessageBoxW(hwndMain_, msg.c_str(), L"检查更新", MB_YESNO | MB_ICONQUESTION) != IDYES) {
         delete info;
         SetUpdateBusy(false);
         return;
@@ -604,12 +596,11 @@ void App::OnUpdateDownloadDone(UpdateDownloadResult* result) {
             : result->info.releasePageUrl;
         const std::wstring direct = result->info.downloadUrl;
 
-        wchar_t msg[768];
-        swprintf_s(msg,
-                   L"下载更新失败：%ls\n\n你可以在浏览器中手动下载安装包。\n是否打开下载页面？",
-                   result->error.empty() ? L"未知错误" : result->error.c_str());
+        const std::wstring errText = result->error.empty() ? L"未知错误" : result->error;
+        const std::wstring msg = L"下载更新失败：" + errText
+            + L"\n\n你可以在浏览器中手动下载安装包。\n是否打开下载页面？";
         SetStatus(L"下载更新失败");
-        if (MessageBoxW(hwndMain_, msg, L"更新失败", MB_YESNO | MB_ICONWARNING) == IDYES) {
+        if (MessageBoxW(hwndMain_, msg.c_str(), L"更新失败", MB_YESNO | MB_ICONWARNING) == IDYES) {
             if (!direct.empty()) {
                 UpdateManager::OpenInBrowser(direct);
             } else {
@@ -623,12 +614,11 @@ void App::OnUpdateDownloadDone(UpdateDownloadResult* result) {
 
     std::wstring err;
     if (!UpdateManager::ApplyAndRestart(result->zipPath, err)) {
-        wchar_t msg[768];
-        swprintf_s(msg,
-                   L"安装更新失败：%ls\n\n是否在浏览器中打开下载页手动安装？",
-                   err.empty() ? L"未知错误" : err.c_str());
+        const std::wstring errText = err.empty() ? L"未知错误" : err;
+        const std::wstring msg = L"安装更新失败：" + errText
+            + L"\n\n是否在浏览器中打开下载页手动安装？";
         SetStatus(L"安装更新失败");
-        if (MessageBoxW(hwndMain_, msg, L"更新失败", MB_YESNO | MB_ICONWARNING) == IDYES) {
+        if (MessageBoxW(hwndMain_, msg.c_str(), L"更新失败", MB_YESNO | MB_ICONWARNING) == IDYES) {
             if (!result->info.downloadUrl.empty()) {
                 UpdateManager::OpenInBrowser(result->info.downloadUrl);
             } else {

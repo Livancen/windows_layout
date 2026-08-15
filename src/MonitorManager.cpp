@@ -1,5 +1,6 @@
 #include "MonitorManager.h"
 #include <cstdio>
+#include <string>
 
 BOOL CALLBACK MonitorManager::EnumProc(HMONITOR hMon, HDC, LPRECT, LPARAM lParam) {
     auto* self = reinterpret_cast<MonitorManager*>(lParam);
@@ -17,15 +18,12 @@ BOOL CALLBACK MonitorManager::EnumProc(HMONITOR hMon, HDC, LPRECT, LPARAM lParam
     info.primary = (mi.dwFlags & MONITORINFOF_PRIMARY) != 0;
     info.name = mi.szDevice;
 
-    wchar_t buf[256];
     const int w = mi.rcMonitor.right - mi.rcMonitor.left;
     const int h = mi.rcMonitor.bottom - mi.rcMonitor.top;
-    swprintf_s(buf, L"屏幕 %d%ls  %dx%d  (%d,%d)",
-               info.index + 1,
-               info.primary ? L" [主]" : L"",
-               w, h,
-               mi.rcMonitor.left, mi.rcMonitor.top);
-    info.displayName = buf;
+    info.displayName = L"屏幕 " + std::to_wstring(info.index + 1)
+        + (info.primary ? L" [主]" : L"")
+        + L"  " + std::to_wstring(w) + L"x" + std::to_wstring(h)
+        + L"  (" + std::to_wstring(mi.rcMonitor.left) + L"," + std::to_wstring(mi.rcMonitor.top) + L")";
 
     self->monitors_.push_back(info);
     return TRUE;

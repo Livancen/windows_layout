@@ -5,7 +5,7 @@ set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 if(NOT DEFINED APP_VERSION)
-    set(APP_VERSION "0.1.4")
+    set(APP_VERSION "0.1.5")
 endif()
 
 add_executable(WindowLayout WIN32

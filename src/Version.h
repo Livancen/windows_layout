@@ -1,8 +1,12 @@
 #pragma once
 
+// Keep as a plain string so CI can override with -DAPP_VERSION=...
 #ifndef APP_VERSION
-#define APP_VERSION "0.1.4"
+#define APP_VERSION "0.1.5"
 #endif
+
+// Wide form for UI (string concatenation, no printf formatting).
+#define APP_VERSION_W L"" APP_VERSION
 
 #ifndef APP_REPO_OWNER
 #define APP_REPO_OWNER "Livancen"
