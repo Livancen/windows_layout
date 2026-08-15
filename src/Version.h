@@ -1,10 +1,8 @@
 #pragma once
 
-// Default for IDE / local includes. CMake and build.bat prefer a generated
-// header from the build directory (which always has a quoted string version).
-#ifndef APP_VERSION
-#define APP_VERSION "0.1.8"
-#endif
+// APP_VERSION comes only from generated AppVersion.h (build/generated).
+// Do NOT define APP_VERSION here — files under src/ would shadow a generated Version.h.
+#include "AppVersion.h"
 
 #ifndef APP_REPO_OWNER
 #define APP_REPO_OWNER "Livancen"

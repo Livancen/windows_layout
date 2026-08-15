@@ -1,0 +1,4 @@
+#pragma once
+
+// Generated at build time by CMake / build.bat. Do not edit.
+#define APP_VERSION "@APP_VERSION@"

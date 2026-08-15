@@ -21,17 +21,18 @@ jobs:
         shell: pwsh
         run: |
           if ($env:GITHUB_REF -like "refs/tags/v*") {
-            $v = $env:GITHUB_REF_NAME.TrimStart('v', 'V')
-            $tagLabel = $env:GITHUB_REF_NAME
+            $tag = $env:GITHUB_REF_NAME
+            if ($tag.StartsWith('v') -or $tag.StartsWith('V')) {
+              $v = $tag.Substring(1)
+            } else {
+              $v = $tag
+            }
           } else {
             $v = "0.0.0+" + $env:GITHUB_SHA.Substring(0, 7)
-            $tagLabel = "dev-" + $env:GITHUB_SHA.Substring(0, 7)
           }
-          # Safe file token: keep alnum, dot, dash, underscore only
           $safe = ($v -replace '[^0-9A-Za-z\.\-_]', '-')
           "app_version=$v" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
           "file_version=$safe" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
-          "tag_label=$tagLabel" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
           Write-Host "APP_VERSION=$v FILE_VERSION=$safe"
 
       - name: Configure CMake
@@ -40,10 +41,13 @@ jobs:
           $v = "${{ steps.ver.outputs.app_version }}"
           Write-Host "Configuring with APP_VERSION=$v"
           cmake -S . -B build -DCMAKE_BUILD_TYPE=Release "-DAPP_VERSION=$v"
-          if (-not (Test-Path "build\generated\Version.h")) {
-            throw "generated Version.h missing"
+          $gen = "build\generated\AppVersion.h"
+          if (-not (Test-Path $gen)) { throw "generated AppVersion.h missing" }
+          $content = Get-Content $gen -Raw
+          Write-Host $content
+          if ($content -notmatch [regex]::Escape('"' + $v + '"')) {
+            throw "AppVersion.h does not contain expected version `"$v`":`n$content"
           }
-          Get-Content "build\generated\Version.h" | Write-Host
 
       - name: Build
         run: cmake --build build --config Release
@@ -61,16 +65,22 @@ jobs:
             throw "WindowLayout.exe not found"
           }
 
-          $vh = Get-Content "build\generated\Version.h" -Raw
-          if ($vh -notmatch 'APP_VERSION\s+"[^"]+"') {
-            throw "APP_VERSION is not a quoted string in generated Version.h:`n$vh"
-          }
-
+          $v = "${{ steps.ver.outputs.app_version }}"
           $ver = "${{ steps.ver.outputs.file_version }}"
+
+          # Hard fail if binary does not embed the version string
+          $bytes = [System.IO.File]::ReadAllBytes((Resolve-Path $exe))
+          $ascii = [System.Text.Encoding]::ASCII.GetString($bytes)
+          $uni = [System.Text.Encoding]::Unicode.GetString($bytes)
+          if (($ascii -notlike "*$v*") -and ($uni -notlike "*$v*")) {
+            throw "Built exe does not contain version string '$v'. Include path is likely wrong."
+          }
+          Write-Host "Verified embedded version string: $v"
+
           $namedExe = "WindowLayout-v$ver.exe"
           $namedZip = "WindowLayout-v$ver-windows-x64.zip"
 
-          # Keep unversioned name inside the zip so auto-update can find WindowLayout.exe
+          # Zip keeps unversioned name for auto-update extraction
           Copy-Item $exe "dist\WindowLayout.exe"
           Copy-Item $exe "dist\$namedExe"
           Compress-Archive -Path "dist\WindowLayout.exe" -DestinationPath "dist\$namedZip" -Force
