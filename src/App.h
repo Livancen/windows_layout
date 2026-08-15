@@ -4,6 +4,7 @@
 #include <commctrl.h>
 #include "WindowManager.h"
 #include "MonitorManager.h"
+#include "UpdateManager.h"
 
 class App {
 public:
@@ -23,6 +24,9 @@ private:
     void OnWindowSelect();
     void OnApply();
     void OnPresetChanged();
+    void OnCheckUpdate();
+    void OnUpdateCheckDone(UpdateInfo* info);
+    void OnUpdateDownloadDone(struct UpdateDownloadResult* result);
     void FillCoordsFromSelection();
     void FillCoordsFromPreset();
     void SetCoordInputs(int x, int y, int w, int h);
@@ -34,6 +38,7 @@ private:
     int SelectedPreset() const;
     void SetStatus(const wchar_t* text);
     void GetCoordInputs(int& x, int& y, int& w, int& h) const;
+    void SetUpdateBusy(bool busy);
     LRESULT OnListCustomDraw(LPNMLVCUSTOMDRAW cd);
 
     static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam);
@@ -49,6 +54,7 @@ private:
     HWND hwndEditW_ = nullptr;
     HWND hwndEditH_ = nullptr;
     HWND hwndBtnApply_ = nullptr;
+    HWND hwndBtnUpdate_ = nullptr;
     HWND hwndStatus_ = nullptr;
     HWND hwndLabelMon_ = nullptr;
     HWND hwndLabelPreset_ = nullptr;
@@ -62,6 +68,7 @@ private:
     HWND selectedHwnd_ = nullptr;
     bool quietSelect_ = false;
     bool quietEdit_ = false;
+    bool updateBusy_ = false;
 
     static constexpr wchar_t kClassName[] = L"WindowLayoutMainClass";
     static constexpr int kIdList = 1001;
@@ -72,7 +79,10 @@ private:
     static constexpr int kIdEditW = 1006;
     static constexpr int kIdEditH = 1007;
     static constexpr int kIdBtnApply = 1009;
+    static constexpr int kIdBtnUpdate = 1010;
     static constexpr int kIdStatus = 1011;
     static constexpr UINT_PTR kTimerRefresh = 1;
     static constexpr UINT kRefreshIntervalMs = 2000;
+    static constexpr UINT WM_APP_UPDATE_CHECK = WM_APP + 1;
+    static constexpr UINT WM_APP_UPDATE_DOWNLOAD = WM_APP + 2;
 };

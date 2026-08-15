@@ -4,11 +4,16 @@ project(WindowLayout LANGUAGES CXX)
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
+if(NOT DEFINED APP_VERSION)
+    set(APP_VERSION "0.1.0")
+endif()
+
 add_executable(WindowLayout WIN32
     src/main.cpp
     src/App.cpp
     src/WindowManager.cpp
     src/MonitorManager.cpp
+    src/UpdateManager.cpp
 )
 
 target_include_directories(WindowLayout PRIVATE src)
@@ -18,6 +23,7 @@ target_compile_definitions(WindowLayout PRIVATE
     _UNICODE
     WIN32_LEAN_AND_MEAN
     NOMINMAX
+    APP_VERSION="${APP_VERSION}"
 )
 
 if(MSVC)
@@ -35,4 +41,5 @@ target_link_libraries(WindowLayout PRIVATE
     dwmapi
     shcore
     psapi
+    winhttp
 )

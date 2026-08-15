@@ -16,8 +16,20 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Resolve app version
+        id: ver
+        shell: pwsh
+        run: |
+          if ($env:GITHUB_REF -like "refs/tags/v*") {
+            $v = $env:GITHUB_REF_NAME.TrimStart('v', 'V')
+          } else {
+            $v = "0.0.0+" + $env:GITHUB_SHA.Substring(0, 7)
+          }
+          "app_version=$v" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+          Write-Host "APP_VERSION=$v"
+
       - name: Configure CMake
-        run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+        run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DAPP_VERSION=${{ steps.ver.outputs.app_version }}
 
       - name: Build
         run: cmake --build build --config Release
