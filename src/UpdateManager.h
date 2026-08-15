@@ -31,8 +31,11 @@ public:
     // Download release zip to a temp file. Returns empty path on failure.
     static std::wstring DownloadUpdate(const UpdateInfo& info, ProgressFn progress, std::wstring& error);
 
-    // Extract exe, stage replace-on-exit script, then quit the app to finish update.
+    // Extract package, launch staged new exe to finish replace after this process exits.
     static bool ApplyAndRestart(const std::wstring& zipPath, std::wstring& error);
+
+    // Handle --self-update <pid> <targetPath> (no UI). Returns true if this process was an updater.
+    static bool TryHandleSelfUpdate(LPWSTR cmdLine);
 
     static void OpenInBrowser(const std::wstring& url);
 };

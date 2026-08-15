@@ -3,6 +3,8 @@
 
 #include <winhttp.h>
 #include <shellapi.h>
+#include <shldisp.h>
+#include <shlobj.h>
 
 #include <algorithm>
 #include <cstdio>
@@ -13,6 +15,8 @@
 
 #pragma comment(lib, "winhttp.lib")
 #pragma comment(lib, "shell32.lib")
+#pragma comment(lib, "ole32.lib")
+#pragma comment(lib, "oleaut32.lib")
 
 namespace fs = std::filesystem;
 
@@ -328,82 +332,7 @@ fs::path TempUpdateDir() {
     return fs::path(tmp) / L"WindowLayoutUpdate";
 }
 
-std::wstring PowerShellExePath() {
-    wchar_t sys[MAX_PATH]{};
-    UINT n = GetSystemDirectoryW(sys, MAX_PATH);
-    if (n == 0 || n >= MAX_PATH) {
-        return L"C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe";
-    }
-    return std::wstring(sys) + L"\\WindowsPowerShell\\v1.0\\powershell.exe";
-}
-
-bool LaunchHiddenDetached(const std::wstring& exe, const std::wstring& args, std::wstring& error) {
-    // Do NOT combine DETACHED_PROCESS with CREATE_NO_WINDOW (NO_WINDOW is ignored).
-    // Avoid cmd.exe / start — both flash a console. Launch powershell.exe directly.
-    std::wstring cmd = L"\"" + exe + L"\" " + args;
-    std::vector<wchar_t> mutableCmd(cmd.begin(), cmd.end());
-    mutableCmd.push_back(L'\0');
-
-    STARTUPINFOW si{};
-    si.cb = sizeof(si);
-    si.dwFlags = STARTF_USESHOWWINDOW;
-    si.wShowWindow = SW_HIDE;
-    PROCESS_INFORMATION pi{};
-
-    DWORD flags = CREATE_NO_WINDOW | CREATE_NEW_PROCESS_GROUP | CREATE_BREAKAWAY_FROM_JOB;
-    if (!CreateProcessW(exe.c_str(), mutableCmd.data(), nullptr, nullptr, FALSE,
-                        flags, nullptr, nullptr, &si, &pi)) {
-        // Retry without BREAKAWAY_FROM_JOB (not always allowed).
-        flags = CREATE_NO_WINDOW | CREATE_NEW_PROCESS_GROUP;
-        if (!CreateProcessW(exe.c_str(), mutableCmd.data(), nullptr, nullptr, FALSE,
-                            flags, nullptr, nullptr, &si, &pi)) {
-            error = L"无法启动后台进程";
-            return false;
-        }
-    }
-    CloseHandle(pi.hThread);
-    CloseHandle(pi.hProcess);
-    return true;
-}
-
-bool ExpandZip(const fs::path& zip, const fs::path& dest, std::wstring& error) {
-    std::error_code ec;
-    fs::create_directories(dest, ec);
-
-    const std::wstring ps = PowerShellExePath();
-    std::wstring args = L"-NoLogo -NoProfile -NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass -Command "
-        L"\"Expand-Archive -LiteralPath '" + zip.wstring() + L"' -DestinationPath '"
-        + dest.wstring() + L"' -Force\"";
-
-    std::wstring cmd = L"\"" + ps + L"\" " + args;
-    std::vector<wchar_t> mutableCmd(cmd.begin(), cmd.end());
-    mutableCmd.push_back(L'\0');
-
-    STARTUPINFOW si{};
-    si.cb = sizeof(si);
-    si.dwFlags = STARTF_USESHOWWINDOW;
-    si.wShowWindow = SW_HIDE;
-    PROCESS_INFORMATION pi{};
-
-    if (!CreateProcessW(ps.c_str(), mutableCmd.data(), nullptr, nullptr, FALSE,
-                        CREATE_NO_WINDOW, nullptr, nullptr, &si, &pi)) {
-        error = L"无法解压更新包（PowerShell）";
-        return false;
-    }
-    WaitForSingleObject(pi.hProcess, 120000);
-    DWORD code = 1;
-    GetExitCodeProcess(pi.hProcess, &code);
-    CloseHandle(pi.hThread);
-    CloseHandle(pi.hProcess);
-    if (code != 0) {
-        error = L"解压更新包失败";
-        return false;
-    }
-    return true;
-}
-
 bool IsWindowLayoutExeName(const std::wstring& name) {
-    // Accept WindowLayout.exe and versioned names like WindowLayout-v0.1.9.exe
     if (name.size() < 4) return false;
     if (name.compare(name.size() - 4, 4, L".exe") != 0) return false;
     if (name == L"WindowLayout.exe") return true;
@@ -427,144 +356,243 @@ fs::path FindUpdatedExe(const fs::path& dir) {
     return preferred.empty() ? any : preferred;
 }
 
-std::string EscapePowerShellSingleQuoted(const std::string& s) {
-    std::string out;
-    out.reserve(s.size() + 8);
-    for (char c : s) {
-        if (c == '\'') out += "''";
-        else out.push_back(c);
-    }
-    return out;
-}
+// Extract zip using Shell.Application (Windows built-in, no PowerShell).
+bool ExpandZip(const fs::path& zip, const fs::path& dest, std::wstring& error) {
+    std::error_code ec;
+    fs::create_directories(dest, ec);
 
-bool WriteUtf16LeBomFile(const fs::path& path, const std::wstring& content, std::wstring& error) {
-    HANDLE h = CreateFileW(path.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS,
-                           FILE_ATTRIBUTE_NORMAL, nullptr);
-    if (h == INVALID_HANDLE_VALUE) {
-        error = L"无法创建更新脚本";
+    HRESULT hrInit = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
+    const bool needUninit = SUCCEEDED(hrInit);
+    if (FAILED(hrInit) && hrInit != RPC_E_CHANGED_MODE) {
+        error = L"无法初始化 COM";
         return false;
     }
-    const WORD bom = 0xFEFF;
-    DWORD written = 0;
-    if (!WriteFile(h, &bom, sizeof(bom), &written, nullptr)) {
-        CloseHandle(h);
-        error = L"无法写入更新脚本";
-        return false;
-    }
-    const DWORD bytes = static_cast<DWORD>(content.size() * sizeof(wchar_t));
-    if (!WriteFile(h, content.data(), bytes, &written, nullptr) || written != bytes) {
-        CloseHandle(h);
-        error = L"无法写入更新脚本";
-        return false;
-    }
-    CloseHandle(h);
-    return true;
-}
 
-bool WriteUpdaterScript(const fs::path& script, DWORD pid,
-                        const fs::path& newExe, const fs::path& targetExe, std::wstring& error) {
-    auto escape = [](const std::wstring& s) {
-        std::wstring o;
-        o.reserve(s.size() + 8);
-        for (wchar_t c : s) {
-            if (c == L'\'') o += L"''";
-            else o.push_back(c);
-        }
-        return o;
+    bool ok = false;
+    IShellDispatch* shell = nullptr;
+    Folder* zipFolder = nullptr;
+    Folder* destFolder = nullptr;
+    FolderItems* items = nullptr;
+
+    auto cleanup = [&]() {
+        if (items) items->Release();
+        if (zipFolder) zipFolder->Release();
+        if (destFolder) destFolder->Release();
+        if (shell) shell->Release();
+        if (needUninit) CoUninitialize();
     };
 
-    // Robust Windows self-replace (UTF-16 LE script for PowerShell 5.1):
-    // 1) wait until old process fully exits and file lock drops
-    // 2) move old image to .old, copy new file, verify size
-    // 3) relaunch with multiple fallbacks; never relaunch if replace failed
-    std::wostringstream ps;
-    ps
-        << L"$ErrorActionPreference = 'Continue'\r\n"
-        << L"$pidToWait = " << pid << L"\r\n"
-        << L"$newExe = '" << escape(newExe.wstring()) << L"'\r\n"
-        << L"$target = '" << escape(targetExe.wstring()) << L"'\r\n"
-        << L"$bak = $target + '.old'\r\n"
-        << L"$workDir = Split-Path -Parent $target\r\n"
-        << L"$logDir = Join-Path $env:TEMP 'WindowLayoutUpdate'\r\n"
-        << L"New-Item -ItemType Directory -Force -Path $logDir | Out-Null\r\n"
-        << L"$log = Join-Path $logDir 'update.log'\r\n"
-        << L"function Log([string]$m) { try { Add-Content -LiteralPath $log -Value ((Get-Date -Format o) + ' ' + $m) } catch {} }\r\n"
-        << L"Log ('updater start pid=' + $pidToWait)\r\n"
-        << L"Log ('new=' + $newExe)\r\n"
-        << L"Log ('target=' + $target)\r\n"
-        << L"for ($i = 0; $i -lt 200; $i++) {\r\n"
-        << L"  if (-not (Get-Process -Id $pidToWait -ErrorAction SilentlyContinue)) { break }\r\n"
-        << L"  Start-Sleep -Milliseconds 100\r\n"
-        << L"}\r\n"
-        << L"Start-Sleep -Milliseconds 800\r\n"
-        << L"$ok = $false\r\n"
-        << L"$lastErr = ''\r\n"
-        << L"for ($i = 0; $i -lt 50; $i++) {\r\n"
-        << L"  try {\r\n"
-        << L"    if (-not (Test-Path -LiteralPath $newExe)) { throw 'new exe missing' }\r\n"
-        << L"    $srcLen = [int64](Get-Item -LiteralPath $newExe).Length\r\n"
-        << L"    if ($srcLen -lt 1024) { throw 'new exe too small' }\r\n"
-        << L"    if (Test-Path -LiteralPath $bak) { Remove-Item -LiteralPath $bak -Force -ErrorAction Stop }\r\n"
-        << L"    if (Test-Path -LiteralPath $target) { Move-Item -LiteralPath $target -Destination $bak -Force -ErrorAction Stop }\r\n"
-        << L"    Copy-Item -LiteralPath $newExe -Destination $target -Force -ErrorAction Stop\r\n"
-        << L"    $dstLen = [int64](Get-Item -LiteralPath $target).Length\r\n"
-        << L"    if ($dstLen -ne $srcLen) { throw ('size mismatch src=' + $srcLen + ' dst=' + $dstLen) }\r\n"
-        << L"    $ok = $true\r\n"
-        << L"    Log ('replace ok size=' + $dstLen + ' try=' + $i)\r\n"
-        << L"    break\r\n"
-        << L"  } catch {\r\n"
-        << L"    $lastErr = $_.Exception.Message\r\n"
-        << L"    Log ('retry ' + $i + ' ' + $lastErr)\r\n"
-        << L"    if ((-not (Test-Path -LiteralPath $target)) -and (Test-Path -LiteralPath $bak)) {\r\n"
-        << L"      try { Move-Item -LiteralPath $bak -Destination $target -Force } catch { Log ('restore failed ' + $_.Exception.Message) }\r\n"
-        << L"    }\r\n"
-        << L"    Start-Sleep -Milliseconds 300\r\n"
-        << L"  }\r\n"
-        << L"}\r\n"
-        << L"if ($ok) {\r\n"
-        << L"  Start-Sleep -Milliseconds 400\r\n"
-        << L"  $launched = $false\r\n"
-        << L"  try {\r\n"
-        << L"    $p = Start-Process -FilePath $target -WorkingDirectory $workDir -PassThru\r\n"
-        << L"    if ($p) { $launched = $true; Log ('start Start-Process ok pid=' + $p.Id) }\r\n"
-        << L"  } catch { Log ('Start-Process failed ' + $_.Exception.Message) }\r\n"
-        << L"  if (-not $launched) {\r\n"
-        << L"    try {\r\n"
-        << L"      $args = '/c start \"\" \"' + $target + '\"'\r\n"
-        << L"      Start-Process -FilePath $env:ComSpec -ArgumentList $args -WorkingDirectory $workDir -WindowStyle Hidden\r\n"
-        << L"      $launched = $true\r\n"
-        << L"      Log 'start cmd ok'\r\n"
-        << L"    } catch { Log ('cmd start failed ' + $_.Exception.Message) }\r\n"
-        << L"  }\r\n"
-        << L"  if (-not $launched) {\r\n"
-        << L"    try {\r\n"
-        << L"      Start-Process -FilePath 'explorer.exe' -ArgumentList $target\r\n"
-        << L"      $launched = $true\r\n"
-        << L"      Log 'start explorer ok'\r\n"
-        << L"    } catch { Log ('explorer start failed ' + $_.Exception.Message) }\r\n"
-        << L"  }\r\n"
-        << L"  if (-not $launched) {\r\n"
-        << L"    try {\r\n"
-        << L"      Add-Type -AssemblyName System.Windows.Forms\r\n"
-        << L"      [System.Windows.Forms.MessageBox]::Show(\r\n"
-        << L"        ('更新文件已替换，但自动启动失败。`r`n请手动打开：`r`n' + $target),\r\n"
-        << L"        'WindowLayout 更新','OK','Warning') | Out-Null\r\n"
-        << L"    } catch {}\r\n"
-        << L"  }\r\n"
-        << L"  Remove-Item -LiteralPath $bak -Force -ErrorAction SilentlyContinue\r\n"
-        << L"  Remove-Item -LiteralPath $newExe -Force -ErrorAction SilentlyContinue\r\n"
-        << L"} else {\r\n"
-        << L"  Log ('FAILED ' + $lastErr)\r\n"
-        << L"  try {\r\n"
-        << L"    Add-Type -AssemblyName System.Windows.Forms\r\n"
-        << L"    [System.Windows.Forms.MessageBox]::Show(\r\n"
-        << L"      ('自动更新失败，未能替换程序文件。`r`n' + $lastErr + '`r`n`r`n请手动下载安装新版本。`r`n日志: ' + $log),\r\n"
-        << L"      'WindowLayout 更新失败','OK','Error') | Out-Null\r\n"
-        << L"  } catch {}\r\n"
-        << L"}\r\n"
-        << L"Remove-Item -LiteralPath $PSCommandPath -Force -ErrorAction SilentlyContinue\r\n";
+    if (FAILED(CoCreateInstance(CLSID_Shell, nullptr, CLSCTX_INPROC_SERVER,
+                                IID_IShellDispatch, reinterpret_cast<void**>(&shell))) || !shell) {
+        error = L"无法创建 Shell 对象";
+        cleanup();
+        return false;
+    }
 
-    return WriteUtf16LeBomFile(script, ps.str(), error);
+    VARIANT vZip{};
+    vZip.vt = VT_BSTR;
+    vZip.bstrVal = SysAllocString(zip.wstring().c_str());
+    VARIANT vDest{};
+    vDest.vt = VT_BSTR;
+    vDest.bstrVal = SysAllocString(dest.wstring().c_str());
+
+    if (!vZip.bstrVal || !vDest.bstrVal ||
+        FAILED(shell->NameSpace(vZip, &zipFolder)) || !zipFolder ||
+        FAILED(shell->NameSpace(vDest, &destFolder)) || !destFolder ||
+        FAILED(zipFolder->Items(&items)) || !items) {
+        error = L"无法打开更新包";
+        SysFreeString(vZip.bstrVal);
+        SysFreeString(vDest.bstrVal);
+        cleanup();
+        return false;
+    }
+
+    VARIANT vItems{};
+    vItems.vt = VT_DISPATCH;
+    vItems.pdispVal = items;
+    items->AddRef();
+
+    // 4=NoProgressUI, 16=YesToAll, 512=NoConfirmMkDir, 1024=NoErrorUI
+    VARIANT vOpt{};
+    vOpt.vt = VT_I4;
+    vOpt.lVal = 4 | 16 | 512 | 1024;
+
+    hrInit = destFolder->CopyHere(vItems, vOpt);
+    SysFreeString(vZip.bstrVal);
+    SysFreeString(vDest.bstrVal);
+    VariantClear(&vItems);
+
+    if (FAILED(hrInit)) {
+        error = L"解压更新包失败";
+        cleanup();
+        return false;
+    }
+
+    // CopyHere is asynchronous; wait until WindowLayout*.exe appears.
+    for (int i = 0; i < 200; ++i) {
+        fs::path found = FindUpdatedExe(dest);
+        if (!found.empty()) {
+            ok = true;
+            break;
+        }
+        Sleep(50);
+    }
+
+    if (!ok) {
+        // One more wait for empty extract edge cases
+        Sleep(500);
+        ok = !FindUpdatedExe(dest).empty();
+    }
+    if (!ok) error = L"解压超时或更新包无效";
+    cleanup();
+    return ok;
+}
+
+bool WaitForProcessExit(DWORD pid, DWORD timeoutMs) {
+    HANDLE h = OpenProcess(SYNCHRONIZE, FALSE, pid);
+    if (!h) {
+        // Already gone or no permission — treat as exited if process query fails.
+        return true;
+    }
+    DWORD r = WaitForSingleObject(h, timeoutMs);
+    CloseHandle(h);
+    return r == WAIT_OBJECT_0 || r == WAIT_FAILED;
+}
+
+bool CopyFileWithRetry(const fs::path& src, const fs::path& dst, int tries, std::wstring& error) {
+    for (int i = 0; i < tries; ++i) {
+        if (CopyFileW(src.c_str(), dst.c_str(), FALSE)) {
+            return true;
+        }
+        Sleep(200);
+    }
+    error = L"复制文件失败";
+    return false;
+}
+
+bool MoveFileWithRetry(const fs::path& src, const fs::path& dst, int tries) {
+    for (int i = 0; i < tries; ++i) {
+        if (MoveFileExW(src.c_str(), dst.c_str(),
+                        MOVEFILE_REPLACE_EXISTING | MOVEFILE_COPY_ALLOWED | MOVEFILE_WRITE_THROUGH)) {
+            return true;
+        }
+        Sleep(200);
+    }
+    return false;
+}
+
+void AppendUpdateLog(const std::wstring& line) {
+    try {
+        fs::path log = TempUpdateDir() / L"update.log";
+        std::ofstream ofs(log, std::ios::app | std::ios::binary);
+        if (!ofs) return;
+        std::string u8 = WideToUtf8(line);
+        ofs << u8 << "\r\n";
+    } catch (...) {
+    }
+}
+
+// Native self-replace: this process is the staged new exe.
+// Args: --self-update <pid> <targetPath>
+bool RunSelfUpdateWorker(DWORD oldPid, const fs::path& target) {
+    AppendUpdateLog(L"self-update start pid=" + std::to_wstring(oldPid));
+    AppendUpdateLog(L"target=" + target.wstring());
+
+    if (!WaitForProcessExit(oldPid, 30000)) {
+        // Keep waiting a bit more.
+        WaitForProcessExit(oldPid, 30000);
+    }
+    Sleep(400);
+
+    fs::path self = ExePath();
+    fs::path bak = target.wstring() + L".old";
+    std::error_code ec;
+
+    bool ok = false;
+    std::wstring lastErr;
+    for (int i = 0; i < 40; ++i) {
+        if (!fs::exists(self, ec)) {
+            lastErr = L"staged exe missing";
+            Sleep(200);
+            continue;
+        }
+        const auto srcSize = fs::file_size(self, ec);
+        if (ec || srcSize < 1024) {
+            lastErr = L"staged exe too small";
+            Sleep(200);
+            continue;
+        }
+
+        fs::remove(bak, ec);
+        if (fs::exists(target, ec)) {
+            if (!MoveFileWithRetry(target, bak, 5)) {
+                lastErr = L"rename old exe failed";
+                Sleep(250);
+                continue;
+            }
+        }
+
+        if (!CopyFileWithRetry(self, target, 8, lastErr)) {
+            // restore
+            if (fs::exists(bak, ec) && !fs::exists(target, ec)) {
+                MoveFileWithRetry(bak, target, 5);
+            }
+            Sleep(250);
+            continue;
+        }
+
+        const auto dstSize = fs::file_size(target, ec);
+        if (ec || dstSize != srcSize) {
+            lastErr = L"size mismatch";
+            if (fs::exists(bak, ec)) {
+                fs::remove(target, ec);
+                MoveFileWithRetry(bak, target, 5);
+            }
+            Sleep(250);
+            continue;
+        }
+
+        ok = true;
+        AppendUpdateLog(L"replace ok size=" + std::to_wstring(dstSize));
+        break;
+    }
+
+    if (!ok) {
+        AppendUpdateLog(L"FAILED " + lastErr);
+        std::wstring msg = L"自动更新失败，未能替换程序文件。\n" + lastErr
+            + L"\n\n请手动下载安装新版本。\n日志: "
+            + (TempUpdateDir() / L"update.log").wstring();
+        MessageBoxW(nullptr, msg.c_str(), L"WindowLayout 更新失败", MB_OK | MB_ICONERROR);
+        return false;
+    }
+
+    Sleep(300);
+    fs::path workDir = target.parent_path();
+    STARTUPINFOW si{};
+    si.cb = sizeof(si);
+    PROCESS_INFORMATION pi{};
+    std::wstring cmd = L"\"" + target.wstring() + L"\"";
+    std::vector<wchar_t> buf(cmd.begin(), cmd.end());
+    buf.push_back(L'\0');
+
+    BOOL started = CreateProcessW(
+        target.c_str(), buf.data(), nullptr, nullptr, FALSE,
+        0, nullptr,
+        workDir.empty() ? nullptr : workDir.c_str(),
+        &si, &pi);
+    if (!started) {
+        AppendUpdateLog(L"start failed");
+        std::wstring msg = L"更新文件已替换，但自动启动失败。\n请手动打开：\n" + target.wstring();
+        MessageBoxW(nullptr, msg.c_str(), L"WindowLayout 更新", MB_OK | MB_ICONWARNING);
+    } else {
+        AppendUpdateLog(L"start ok");
+        CloseHandle(pi.hThread);
+        CloseHandle(pi.hProcess);
+    }
+
+    fs::remove(bak, ec);
+    // Do not delete self while still running; schedule best-effort cleanup next run.
+    return true;
 }
 
 struct ReleasePick {
@@ -757,8 +785,8 @@ bool UpdateManager::ApplyAndRestart(const std::wstring& zipPath, std::wstring& e
         return false;
     }
 
-    // Stage outside extract dir so cleanup/extraction leftovers cannot interfere.
-    fs::path staged = TempUpdateDir() / L"WindowLayout.exe.new";
+    // Stage as a real .exe so Windows can launch it (no PowerShell helper).
+    fs::path staged = TempUpdateDir() / L"WindowLayout_update.exe";
     fs::remove(staged, ec);
     fs::copy_file(newExe, staged, fs::copy_options::overwrite_existing, ec);
     if (ec || !fs::exists(staged)) {
@@ -767,34 +795,80 @@ bool UpdateManager::ApplyAndRestart(const std::wstring& zipPath, std::wstring& e
     }
 
     const auto stagedSize = fs::file_size(staged, ec);
-    if (ec || stagedSize < 64) {
+    if (ec || stagedSize < 1024) {
         error = L"更新文件无效";
         return false;
     }
 
     fs::path target = ExePath();
-    // Refuse no-op if target path is missing (should not happen).
     if (target.empty()) {
         error = L"无法定位当前程序路径";
         return false;
     }
 
-    fs::path script = TempUpdateDir() / L"apply_update.ps1";
-    DWORD pid = GetCurrentProcessId();
-    if (!WriteUpdaterScript(script, pid, staged, target, error)) return false;
+    // Launch staged new binary as updater worker:
+    // WindowLayout_update.exe --self-update <oldPid> "<targetExe>"
+    const DWORD pid = GetCurrentProcessId();
+    std::wstring cmd = L"\"" + staged.wstring() + L"\" --self-update "
+        + std::to_wstring(pid) + L" \"" + target.wstring() + L"\"";
+    std::vector<wchar_t> mutableCmd(cmd.begin(), cmd.end());
+    mutableCmd.push_back(L'\0');
 
-    // Launch PowerShell directly (no cmd/start) so no console window flashes.
-    const std::wstring ps = PowerShellExePath();
-    const std::wstring args = L"-NoLogo -NoProfile -NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass -File \""
-        + script.wstring() + L"\"";
-    std::wstring launchErr;
-    if (!LaunchHiddenDetached(ps, args, launchErr)) {
-        error = L"无法启动更新程序";
-        return false;
+    STARTUPINFOW si{};
+    si.cb = sizeof(si);
+    si.dwFlags = STARTF_USESHOWWINDOW;
+    si.wShowWindow = SW_HIDE;
+    PROCESS_INFORMATION pi{};
+
+    // Break away from any job so updater survives when this GUI exits.
+    DWORD flags = CREATE_NEW_PROCESS_GROUP | CREATE_BREAKAWAY_FROM_JOB;
+    if (!CreateProcessW(staged.c_str(), mutableCmd.data(), nullptr, nullptr, FALSE,
+                        flags, nullptr, nullptr, &si, &pi)) {
+        flags = CREATE_NEW_PROCESS_GROUP;
+        if (!CreateProcessW(staged.c_str(), mutableCmd.data(), nullptr, nullptr, FALSE,
+                            flags, nullptr, nullptr, &si, &pi)) {
+            error = L"无法启动更新程序";
+            return false;
+        }
     }
-    // Brief head start before this process exits.
+    CloseHandle(pi.hThread);
+    CloseHandle(pi.hProcess);
     Sleep(300);
     return true;
+}
+
+bool UpdateManager::TryHandleSelfUpdate(LPWSTR cmdLine) {
+    if (!cmdLine || !*cmdLine) return false;
+
+    int argc = 0;
+    LPWSTR* argv = CommandLineToArgvW(cmdLine, &argc);
+    // wWinMain cmdLine excludes exe path; rebuild with GetCommandLineW for full argv.
+    if (argv) LocalFree(argv);
+    argv = CommandLineToArgvW(GetCommandLineW(), &argc);
+    if (!argv) return false;
+
+    bool handled = false;
+    // Expect: <exe> --self-update <pid> <targetPath>
+    for (int i = 1; i + 2 < argc; ++i) {
+        if (wcscmp(argv[i], L"--self-update") == 0) {
+            DWORD pid = static_cast<DWORD>(_wtoi(argv[i + 1]));
+            fs::path target = argv[i + 2];
+            // Remaining tokens if path was split — join from i+2 to end.
+            if (i + 3 < argc) {
+                std::wstring full = argv[i + 2];
+                for (int j = i + 3; j < argc; ++j) {
+                    full += L' ';
+                    full += argv[j];
+                }
+                target = full;
+            }
+            RunSelfUpdateWorker(pid, target);
+            handled = true;
+            break;
+        }
+    }
+    LocalFree(argv);
+    return handled;
 }
 
 void UpdateManager::OpenInBrowser(const std::wstring& url) {
