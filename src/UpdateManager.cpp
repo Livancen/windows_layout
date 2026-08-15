@@ -328,22 +328,64 @@ fs::path TempUpdateDir() {
     return fs::path(tmp) / L"WindowLayoutUpdate";
 }
 
-bool ExpandZip(const fs::path& zip, const fs::path& dest, std::wstring& error) {
-    std::error_code ec;
-    fs::create_directories(dest, ec);
+std::wstring PowerShellExePath() {
+    wchar_t sys[MAX_PATH]{};
+    UINT n = GetSystemDirectoryW(sys, MAX_PATH);
+    if (n == 0 || n >= MAX_PATH) {
+        return L"C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe";
+    }
+    return std::wstring(sys) + L"\\WindowsPowerShell\\v1.0\\powershell.exe";
+}
 
-    std::wstring cmd = L"powershell -NoProfile -ExecutionPolicy Bypass -Command \"Expand-Archive -LiteralPath '"
-        + zip.wstring() + L"' -DestinationPath '" + dest.wstring() + L"' -Force\"";
+bool LaunchHiddenDetached(const std::wstring& exe, const std::wstring& args, std::wstring& error) {
+    // Do NOT combine DETACHED_PROCESS with CREATE_NO_WINDOW (NO_WINDOW is ignored).
+    // Avoid cmd.exe / start — both flash a console. Launch powershell.exe directly.
+    std::wstring cmd = L"\"" + exe + L"\" " + args;
+    std::vector<wchar_t> mutableCmd(cmd.begin(), cmd.end());
+    mutableCmd.push_back(L'\0');
 
     STARTUPINFOW si{};
     si.cb = sizeof(si);
     si.dwFlags = STARTF_USESHOWWINDOW;
     si.wShowWindow = SW_HIDE;
     PROCESS_INFORMATION pi{};
+
+    DWORD flags = CREATE_NO_WINDOW | CREATE_NEW_PROCESS_GROUP | CREATE_BREAKAWAY_FROM_JOB;
+    if (!CreateProcessW(exe.c_str(), mutableCmd.data(), nullptr, nullptr, FALSE,
+                        flags, nullptr, nullptr, &si, &pi)) {
+        // Retry without BREAKAWAY_FROM_JOB (not always allowed).
+        flags = CREATE_NO_WINDOW | CREATE_NEW_PROCESS_GROUP;
+        if (!CreateProcessW(exe.c_str(), mutableCmd.data(), nullptr, nullptr, FALSE,
+                            flags, nullptr, nullptr, &si, &pi)) {
+            error = L"无法启动后台进程";
+            return false;
+        }
+    }
+    CloseHandle(pi.hThread);
+    CloseHandle(pi.hProcess);
+    return true;
+}
+
+bool ExpandZip(const fs::path& zip, const fs::path& dest, std::wstring& error) {
+    std::error_code ec;
+    fs::create_directories(dest, ec);
+
+    const std::wstring ps = PowerShellExePath();
+    std::wstring args = L"-NoLogo -NoProfile -NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass -Command "
+        L"\"Expand-Archive -LiteralPath '" + zip.wstring() + L"' -DestinationPath '"
+        + dest.wstring() + L"' -Force\"";
+
+    std::wstring cmd = L"\"" + ps + L"\" " + args;
     std::vector<wchar_t> mutableCmd(cmd.begin(), cmd.end());
     mutableCmd.push_back(L'\0');
 
-    if (!CreateProcessW(nullptr, mutableCmd.data(), nullptr, nullptr, FALSE,
+    STARTUPINFOW si{};
+    si.cb = sizeof(si);
+    si.dwFlags = STARTF_USESHOWWINDOW;
+    si.wShowWindow = SW_HIDE;
+    PROCESS_INFORMATION pi{};
+
+    if (!CreateProcessW(ps.c_str(), mutableCmd.data(), nullptr, nullptr, FALSE,
                         CREATE_NO_WINDOW, nullptr, nullptr, &si, &pi)) {
         error = L"无法解压更新包（PowerShell）";
         return false;
@@ -741,44 +783,16 @@ bool UpdateManager::ApplyAndRestart(const std::wstring& zipPath, std::wstring& e
     DWORD pid = GetCurrentProcessId();
     if (!WriteUpdaterScript(script, pid, staged, target, error)) return false;
 
-    // Launch updater fully detached from this GUI process/job so it survives exit.
-    wchar_t comspec[MAX_PATH]{};
-    DWORD n = GetEnvironmentVariableW(L"ComSpec", comspec, MAX_PATH);
-    if (n == 0 || n >= MAX_PATH) {
-        wcscpy_s(comspec, L"C:\\Windows\\System32\\cmd.exe");
-    }
-
-    // cmd /c start launches a separate process tree; PowerShell keeps running after app exits.
-    std::wstring cmd = std::wstring(L"\"") + comspec
-        + L"\" /c start \"\" /b powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File \""
+    // Launch PowerShell directly (no cmd/start) so no console window flashes.
+    const std::wstring ps = PowerShellExePath();
+    const std::wstring args = L"-NoLogo -NoProfile -NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass -File \""
         + script.wstring() + L"\"";
-    std::vector<wchar_t> mutableCmd(cmd.begin(), cmd.end());
-    mutableCmd.push_back(L'\0');
-
-    STARTUPINFOW si{};
-    si.cb = sizeof(si);
-    si.dwFlags = STARTF_USESHOWWINDOW;
-    si.wShowWindow = SW_HIDE;
-    PROCESS_INFORMATION pi{};
-
-    DWORD flags = CREATE_NO_WINDOW | DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP;
-    if (!CreateProcessW(nullptr, mutableCmd.data(), nullptr, nullptr, FALSE,
-                        flags, nullptr, nullptr, &si, &pi)) {
-        // Fallback: direct powershell without cmd/start.
-        std::wstring fallback = L"powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File \""
-            + script.wstring() + L"\"";
-        std::vector<wchar_t> fb(fallback.begin(), fallback.end());
-        fb.push_back(L'\0');
-        if (!CreateProcessW(nullptr, fb.data(), nullptr, nullptr, FALSE,
-                            CREATE_NO_WINDOW | DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP,
-                            nullptr, nullptr, &si, &pi)) {
-            error = L"无法启动更新程序";
-            return false;
-        }
+    std::wstring launchErr;
+    if (!LaunchHiddenDetached(ps, args, launchErr)) {
+        error = L"无法启动更新程序";
+        return false;
     }
-    CloseHandle(pi.hThread);
-    CloseHandle(pi.hProcess);
-    // Give updater a brief head start before the app tears down.
+    // Brief head start before this process exits.
     Sleep(300);
     return true;
 }
