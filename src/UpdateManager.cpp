@@ -360,14 +360,29 @@ bool ExpandZip(const fs::path& zip, const fs::path& dest, std::wstring& error) {
     return true;
 }
 
+bool IsWindowLayoutExeName(const std::wstring& name) {
+    // Accept WindowLayout.exe and versioned names like WindowLayout-v0.1.9.exe
+    if (name.size() < 4) return false;
+    if (name.compare(name.size() - 4, 4, L".exe") != 0) return false;
+    if (name == L"WindowLayout.exe") return true;
+    return name.rfind(L"WindowLayout", 0) == 0;
+}
+
 fs::path FindUpdatedExe(const fs::path& dir) {
     std::error_code ec;
+    fs::path preferred;
+    fs::path any;
     for (auto it = fs::recursive_directory_iterator(dir, ec); it != fs::recursive_directory_iterator(); ++it) {
-        if (it->is_regular_file(ec) && it->path().filename() == L"WindowLayout.exe") {
-            return it->path();
+        if (!it->is_regular_file(ec)) continue;
+        const std::wstring name = it->path().filename().wstring();
+        if (!IsWindowLayoutExeName(name)) continue;
+        if (name == L"WindowLayout.exe") {
+            preferred = it->path();
+            break;
         }
+        if (any.empty()) any = it->path();
     }
-    return {};
+    return preferred.empty() ? any : preferred;
 }
 
 bool WriteUpdaterScript(const fs::path& script, DWORD pid,
@@ -400,10 +415,21 @@ struct ReleasePick {
     bool prerelease = false;
 };
 
-// Pick the newest formal (v*) non-prerelease with the expected zip asset.
-// Fallback: newest release (including prerelease) that has the zip.
+bool IsPreferredUpdateZip(const std::string& aname) {
+    // Prefer versioned or legacy zip packages used by the updater.
+    if (aname.size() < 5) return false;
+    if (aname.substr(aname.size() - 4) != ".zip") return false;
+    if (aname == APP_RELEASE_ASSET) return true;
+    if (aname.find("WindowLayout") != std::string::npos &&
+        aname.find("windows-x64") != std::string::npos) {
+        return true;
+    }
+    return aname.rfind("WindowLayout", 0) == 0;
+}
+
+// Pick the newest formal (v*) non-prerelease with a WindowLayout zip asset.
+// Fallback: newest release (including prerelease) that has a zip.
 bool PickRelease(const std::string& json, ReleasePick& out) {
-    const std::string assetWanted = APP_RELEASE_ASSET;
     ReleasePick formal;
     ReleasePick any;
     bool hasFormal = false;
@@ -435,9 +461,9 @@ bool PickRelease(const std::string& json, ReleasePick& out) {
             if (nameKey != std::string::npos && nameKey > assets) {
                 aname = JsonGetString(json, "name", nameKey);
             }
-            if (aname == assetWanted || url.find(assetWanted) != std::string::npos) {
+            if (IsPreferredUpdateZip(aname) || url.find("windows-x64") != std::string::npos) {
                 bestUrl = url;
-                bestName = aname.empty() ? assetWanted : aname;
+                bestName = aname.empty() ? APP_RELEASE_ASSET : aname;
                 break;
             }
             if (bestUrl.empty() && aname.size() > 4 && aname.substr(aname.size() - 4) == ".zip") {
