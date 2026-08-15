@@ -5,7 +5,7 @@ set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 if(NOT DEFINED APP_VERSION)
-    set(APP_VERSION "0.1.0")
+    set(APP_VERSION "0.1.2")
 endif()
 
 add_executable(WindowLayout WIN32
@@ -14,6 +14,7 @@ add_executable(WindowLayout WIN32
     src/WindowManager.cpp
     src/MonitorManager.cpp
     src/UpdateManager.cpp
+    src/app.rc
 )
 
 target_include_directories(WindowLayout PRIVATE src)

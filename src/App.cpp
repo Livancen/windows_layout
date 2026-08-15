@@ -1,5 +1,6 @@
 #include "App.h"
 #include "Version.h"
+#include "resource.h"
 #include <cstdio>
 #include <string>
 #include <thread>
@@ -27,6 +28,15 @@ int App::Run(HINSTANCE hInstance, int nCmdShow) {
     INITCOMMONCONTROLSEX icc{ sizeof(icc), ICC_LISTVIEW_CLASSES | ICC_BAR_CLASSES | ICC_STANDARD_CLASSES };
     InitCommonControlsEx(&icc);
 
+    HICON hIcon = static_cast<HICON>(LoadImageW(
+        hInstance, MAKEINTRESOURCEW(IDI_APP_ICON), IMAGE_ICON,
+        GetSystemMetrics(SM_CXICON), GetSystemMetrics(SM_CYICON), 0));
+    HICON hIconSm = static_cast<HICON>(LoadImageW(
+        hInstance, MAKEINTRESOURCEW(IDI_APP_ICON), IMAGE_ICON,
+        GetSystemMetrics(SM_CXSMICON), GetSystemMetrics(SM_CYSMICON), 0));
+    if (!hIcon) hIcon = LoadIcon(nullptr, IDI_APPLICATION);
+    if (!hIconSm) hIconSm = hIcon;
+
     WNDCLASSEXW wc{};
     wc.cbSize = sizeof(wc);
     wc.style = CS_HREDRAW | CS_VREDRAW;
@@ -35,8 +45,8 @@ int App::Run(HINSTANCE hInstance, int nCmdShow) {
     wc.hCursor = LoadCursor(nullptr, IDC_ARROW);
     wc.hbrBackground = reinterpret_cast<HBRUSH>(COLOR_WINDOW + 1);
     wc.lpszClassName = kClassName;
-    wc.hIcon = LoadIcon(nullptr, IDI_APPLICATION);
-    wc.hIconSm = wc.hIcon;
+    wc.hIcon = hIcon;
+    wc.hIconSm = hIconSm;
 
     if (!RegisterClassExW(&wc)) return 1;
     if (!CreateMainWindow(nCmdShow)) return 1;
