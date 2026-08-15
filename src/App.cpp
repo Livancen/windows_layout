@@ -53,6 +53,7 @@ int App::Run(HINSTANCE hInstance, int nCmdShow) {
 
     RefreshAll();
     SetTimer(hwndMain_, kTimerRefresh, kRefreshIntervalMs, nullptr);
+    StartAutoUpdateCheck();
 
     MSG msg{};
     while (GetMessageW(&msg, nullptr, 0, 0) > 0) {
@@ -157,11 +158,6 @@ void App::CreateControls() {
                                   0, 0, 0, 0, hwndMain_,
                                   reinterpret_cast<HMENU>(static_cast<INT_PTR>(kIdBtnApply)), hInst_, nullptr);
 
-    hwndBtnUpdate_ = CreateWindowW(L"BUTTON", L"检查更新",
-                                   WS_CHILD | WS_VISIBLE,
-                                   0, 0, 0, 0, hwndMain_,
-                                   reinterpret_cast<HMENU>(static_cast<INT_PTR>(kIdBtnUpdate)), hInst_, nullptr);
-
     hwndStatus_ = CreateWindowW(STATUSCLASSNAMEW, L"就绪",
                                 WS_CHILD | WS_VISIBLE | SBARS_SIZEGRIP,
                                 0, 0, 0, 0, hwndMain_,
@@ -171,7 +167,7 @@ void App::CreateControls() {
     HWND controls[] = {
         hwndList_, hwndMonitors_, hwndPresets_,
         hwndEditX_, hwndEditY_, hwndEditW_, hwndEditH_,
-        hwndBtnApply_, hwndBtnUpdate_,
+        hwndBtnApply_,
         hwndLabelMon_, hwndLabelPreset_,
         hwndLabelX_, hwndLabelY_, hwndLabelW_, hwndLabelH_
     };
@@ -229,8 +225,6 @@ void App::LayoutControls(int width, int height) {
     ry += editH + gap * 2;
 
     SetWindowPos(hwndBtnApply_, nullptr, rx, ry, fieldW, btnH, SWP_NOZORDER);
-    ry += btnH + gap;
-    SetWindowPos(hwndBtnUpdate_, nullptr, rx, ry, fieldW, btnH, SWP_NOZORDER);
 }
 
 void App::RefreshAll() {
@@ -252,11 +246,13 @@ void App::RefreshAll() {
     PopulateWindowList();
     RestoreSelection();
 
-    wchar_t buf[128];
-    swprintf_s(buf, L"%d 个窗口 · %d 块屏幕 · 自动刷新中",
-               static_cast<int>(windowMgr_.Windows().size()),
-               monitorMgr_.Count());
-    SetStatus(buf);
+    if (!updateBusy_) {
+        wchar_t buf[128];
+        swprintf_s(buf, L"%d 个窗口 · %d 块屏幕 · 自动刷新中",
+                   static_cast<int>(windowMgr_.Windows().size()),
+                   monitorMgr_.Count());
+        SetStatus(buf);
+    }
 }
 
 void App::RefreshListKeepSelection() {
@@ -514,11 +510,10 @@ void App::OnApply() {
 
 void App::SetUpdateBusy(bool busy) {
     updateBusy_ = busy;
-    EnableWindow(hwndBtnUpdate_, busy ? FALSE : TRUE);
     EnableWindow(hwndBtnApply_, busy ? FALSE : TRUE);
 }
 
-void App::OnCheckUpdate() {
+void App::StartAutoUpdateCheck() {
     if (updateBusy_) return;
     SetUpdateBusy(true);
     SetStatus(L"正在检查更新...");
@@ -536,24 +531,16 @@ void App::OnUpdateCheckDone(UpdateInfo* info) {
         return;
     }
 
+    // Silent when offline / already up to date; only prompt when a real update exists.
     if (!info->error.empty() && info->downloadUrl.empty()) {
-        const std::wstring msg = L"检查更新失败：" + info->error
-            + L"\n\n是否在浏览器中打开发布页手动下载？\n" + info->releasePageUrl;
-        SetStatus(L"检查更新失败");
-        if (MessageBoxW(hwndMain_, msg.c_str(), L"检查更新", MB_YESNO | MB_ICONWARNING) == IDYES) {
-            UpdateManager::OpenInBrowser(info->releasePageUrl);
-        }
+        SetStatus(L"检查更新失败（可稍后重启再试）");
         delete info;
         SetUpdateBusy(false);
         return;
     }
 
     if (!info->available) {
-        const std::wstring latest = info->latestVersion.empty() ? info->currentVersion : info->latestVersion;
-        const std::wstring msg = L"当前已是最新版本。\n\n当前版本：" + info->currentVersion
-            + L"\n最新版本：" + latest;
         SetStatus(L"已是最新版本");
-        MessageBoxW(hwndMain_, msg.c_str(), L"检查更新", MB_OK | MB_ICONINFORMATION);
         delete info;
         SetUpdateBusy(false);
         return;
@@ -564,7 +551,8 @@ void App::OnUpdateCheckDone(UpdateInfo* info) {
         + L"\n发布：" + info->releaseName
         + L"\n\n是否立即下载并安装？";
     SetStatus(L"发现新版本");
-    if (MessageBoxW(hwndMain_, msg.c_str(), L"检查更新", MB_YESNO | MB_ICONQUESTION) != IDYES) {
+    if (MessageBoxW(hwndMain_, msg.c_str(), L"发现新版本", MB_YESNO | MB_ICONQUESTION) != IDYES) {
+        SetStatus(L"已跳过本次更新");
         delete info;
         SetUpdateBusy(false);
         return;
@@ -720,8 +708,6 @@ LRESULT App::HandleMessage(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
         const int code = HIWORD(wParam);
         if (id == kIdBtnApply && code == BN_CLICKED) {
             OnApply();
-        } else if (id == kIdBtnUpdate && code == BN_CLICKED) {
-            OnCheckUpdate();
         } else if (id == kIdPresets && code == CBN_SELCHANGE) {
             OnPresetChanged();
         } else if (id == kIdMonitors && code == CBN_SELCHANGE) {

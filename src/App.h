@@ -24,7 +24,7 @@ private:
     void OnWindowSelect();
     void OnApply();
     void OnPresetChanged();
-    void OnCheckUpdate();
+    void StartAutoUpdateCheck();
     void OnUpdateCheckDone(UpdateInfo* info);
     void OnUpdateDownloadDone(struct UpdateDownloadResult* result);
     void FillCoordsFromSelection();
@@ -54,7 +54,6 @@ private:
     HWND hwndEditW_ = nullptr;
     HWND hwndEditH_ = nullptr;
     HWND hwndBtnApply_ = nullptr;
-    HWND hwndBtnUpdate_ = nullptr;
     HWND hwndStatus_ = nullptr;
     HWND hwndLabelMon_ = nullptr;
     HWND hwndLabelPreset_ = nullptr;
@@ -79,7 +78,6 @@ private:
     static constexpr int kIdEditW = 1006;
     static constexpr int kIdEditH = 1007;
     static constexpr int kIdBtnApply = 1009;
-    static constexpr int kIdBtnUpdate = 1010;
     static constexpr int kIdStatus = 1011;
     static constexpr UINT_PTR kTimerRefresh = 1;
     static constexpr UINT kRefreshIntervalMs = 2000;

@@ -8,7 +8,7 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 # Do NOT pass it via target_compile_definitions: MSVC treats
 # /DAPP_VERSION=0.1.6 as a numeric macro (shows up as "0" in UI).
 if(NOT DEFINED APP_VERSION OR APP_VERSION STREQUAL "")
-    set(APP_VERSION "0.1.6")
+    set(APP_VERSION "0.1.7")
 endif()
 
 set(GENERATED_DIR "${CMAKE_BINARY_DIR}/generated")

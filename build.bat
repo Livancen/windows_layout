@@ -8,7 +8,7 @@ set OUT=build\WindowLayout.exe
 set RES=build\app.res
 set GEN=build\generated
 set SRC=src\main.cpp src\App.cpp src\WindowManager.cpp src\MonitorManager.cpp src\UpdateManager.cpp
-if not defined APP_VERSION set APP_VERSION=0.1.6
+if not defined APP_VERSION set APP_VERSION=0.1.7
 
 if not exist build mkdir build
 if not exist %GEN% mkdir %GEN%

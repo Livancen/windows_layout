@@ -3,7 +3,7 @@
 // Default for IDE / local includes. CMake and build.bat prefer a generated
 // header from the build directory (which always has a quoted string version).
 #ifndef APP_VERSION
-#define APP_VERSION "0.1.6"
+#define APP_VERSION "0.1.7"
 #endif
 
 #ifndef APP_REPO_OWNER
