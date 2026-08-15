@@ -385,6 +385,16 @@ fs::path FindUpdatedExe(const fs::path& dir) {
     return preferred.empty() ? any : preferred;
 }
 
+std::string EscapePowerShellSingleQuoted(const std::string& s) {
+    std::string out;
+    out.reserve(s.size() + 8);
+    for (char c : s) {
+        if (c == '\'') out += "''";
+        else out.push_back(c);
+    }
+    return out;
+}
+
 bool WriteUpdaterScript(const fs::path& script, DWORD pid,
                         const fs::path& newExe, const fs::path& targetExe, std::wstring& error) {
     std::ofstream ofs(script, std::ios::binary);
@@ -392,16 +402,74 @@ bool WriteUpdaterScript(const fs::path& script, DWORD pid,
         error = L"无法创建更新脚本";
         return false;
     }
+
+    // Robust Windows self-replace:
+    // 1) wait until old process fully exits
+    // 2) rename running image to .old (unlocks path better than overwrite)
+    // 3) copy new file into place and verify size
+    // 4) only then relaunch; never start old binary on failure
+    const std::string newPath = EscapePowerShellSingleQuoted(WideToUtf8(newExe.wstring()));
+    const std::string targetPath = EscapePowerShellSingleQuoted(WideToUtf8(targetExe.wstring()));
+
     std::ostringstream ps;
-    ps << "$pidToWait = " << pid << "\r\n"
-       << "$newExe = '" << WideToUtf8(newExe.wstring()) << "'\r\n"
-       << "$target = '" << WideToUtf8(targetExe.wstring()) << "'\r\n"
-       << "while (Get-Process -Id $pidToWait -ErrorAction SilentlyContinue) { Start-Sleep -Milliseconds 400 }\r\n"
-       << "Start-Sleep -Milliseconds 300\r\n"
-       << "Copy-Item -LiteralPath $newExe -Destination $target -Force\r\n"
-       << "Start-Process -FilePath $target\r\n"
-       << "Remove-Item -LiteralPath $newExe -Force -ErrorAction SilentlyContinue\r\n"
-       << "Remove-Item -LiteralPath $MyInvocation.MyCommand.Path -Force -ErrorAction SilentlyContinue\r\n";
+    ps
+        << "$ErrorActionPreference = 'Stop'\r\n"
+        << "$pidToWait = " << pid << "\r\n"
+        << "$newExe = '" << newPath << "'\r\n"
+        << "$target = '" << targetPath << "'\r\n"
+        << "$bak = $target + '.old'\r\n"
+        << "$log = Join-Path $env:TEMP 'WindowLayoutUpdate\\update.log'\r\n"
+        << "function Log([string]$m) { Add-Content -LiteralPath $log -Value ((Get-Date -Format o) + ' ' + $m) -ErrorAction SilentlyContinue }\r\n"
+        << "Log ('wait pid=' + $pidToWait)\r\n"
+        << "for ($i = 0; $i -lt 120; $i++) {\r\n"
+        << "  if (-not (Get-Process -Id $pidToWait -ErrorAction SilentlyContinue)) { break }\r\n"
+        << "  Start-Sleep -Milliseconds 250\r\n"
+        << "}\r\n"
+        << "Start-Sleep -Milliseconds 500\r\n"
+        << "$ok = $false\r\n"
+        << "$lastErr = ''\r\n"
+        << "for ($i = 0; $i -lt 40; $i++) {\r\n"
+        << "  try {\r\n"
+        << "    if (-not (Test-Path -LiteralPath $newExe)) { throw 'new exe missing' }\r\n"
+        << "    $srcLen = (Get-Item -LiteralPath $newExe).Length\r\n"
+        << "    if ($srcLen -lt 64) { throw 'new exe too small' }\r\n"
+        << "    if (Test-Path -LiteralPath $bak) { Remove-Item -LiteralPath $bak -Force -ErrorAction SilentlyContinue }\r\n"
+        << "    if (Test-Path -LiteralPath $target) {\r\n"
+        << "      Rename-Item -LiteralPath $target -NewName ([IO.Path]::GetFileName($bak)) -Force\r\n"
+        << "    }\r\n"
+        << "    Copy-Item -LiteralPath $newExe -Destination $target -Force\r\n"
+        << "    $dstLen = (Get-Item -LiteralPath $target).Length\r\n"
+        << "    if ($dstLen -ne $srcLen) { throw ('size mismatch src=' + $srcLen + ' dst=' + $dstLen) }\r\n"
+        << "    $ok = $true\r\n"
+        << "    Log ('replace ok size=' + $dstLen)\r\n"
+        << "    break\r\n"
+        << "  } catch {\r\n"
+        << "    $lastErr = $_.Exception.Message\r\n"
+        << "    Log ('retry ' + $i + ' ' + $lastErr)\r\n"
+        << "    # try restore original if rename succeeded but copy failed\r\n"
+        << "    if ((-not (Test-Path -LiteralPath $target)) -and (Test-Path -LiteralPath $bak)) {\r\n"
+        << "      try { Rename-Item -LiteralPath $bak -NewName ([IO.Path]::GetFileName($target)) -Force } catch {}\r\n"
+        << "    }\r\n"
+        << "    Start-Sleep -Milliseconds 400\r\n"
+        << "  }\r\n"
+        << "}\r\n"
+        << "if ($ok) {\r\n"
+        << "  try { Start-Process -FilePath $target } catch { Log ('start failed ' + $_.Exception.Message) }\r\n"
+        << "  Remove-Item -LiteralPath $bak -Force -ErrorAction SilentlyContinue\r\n"
+        << "  Remove-Item -LiteralPath $newExe -Force -ErrorAction SilentlyContinue\r\n"
+        << "} else {\r\n"
+        << "  Log ('FAILED ' + $lastErr)\r\n"
+        << "  try {\r\n"
+        << "    Add-Type -AssemblyName System.Windows.Forms\r\n"
+        << "    [System.Windows.Forms.MessageBox]::Show(\r\n"
+        << "      ('自动更新失败，未能替换程序文件。\\n' + $lastErr + '\\n\\n请关闭程序后手动下载安装。'),\r\n"
+        << "      'WindowLayout 更新失败',\r\n"
+        << "      'OK',\r\n"
+        << "      'Error') | Out-Null\r\n"
+        << "  } catch {}\r\n"
+        << "}\r\n"
+        << "Remove-Item -LiteralPath $MyInvocation.MyCommand.Path -Force -ErrorAction SilentlyContinue\r\n";
+
     const std::string content = ps.str();
     ofs.write(content.data(), static_cast<std::streamsize>(content.size()));
     return true;
@@ -597,15 +665,28 @@ bool UpdateManager::ApplyAndRestart(const std::wstring& zipPath, std::wstring& e
         return false;
     }
 
-    // Keep a stable staged copy so extraction cleanup is safer.
+    // Stage outside extract dir so cleanup/extraction leftovers cannot interfere.
     fs::path staged = TempUpdateDir() / L"WindowLayout.exe.new";
+    fs::remove(staged, ec);
     fs::copy_file(newExe, staged, fs::copy_options::overwrite_existing, ec);
-    if (ec) {
+    if (ec || !fs::exists(staged)) {
         error = L"无法准备更新文件";
         return false;
     }
 
+    const auto stagedSize = fs::file_size(staged, ec);
+    if (ec || stagedSize < 64) {
+        error = L"更新文件无效";
+        return false;
+    }
+
     fs::path target = ExePath();
+    // Refuse no-op if target path is missing (should not happen).
+    if (target.empty()) {
+        error = L"无法定位当前程序路径";
+        return false;
+    }
+
     fs::path script = TempUpdateDir() / L"apply_update.ps1";
     DWORD pid = GetCurrentProcessId();
     if (!WriteUpdaterScript(script, pid, staged, target, error)) return false;
@@ -615,6 +696,7 @@ bool UpdateManager::ApplyAndRestart(const std::wstring& zipPath, std::wstring& e
     si.dwFlags = STARTF_USESHOWWINDOW;
     si.wShowWindow = SW_HIDE;
     PROCESS_INFORMATION pi{};
+    // Use -File so script path with spaces works; keep a visible-less console.
     std::wstring cmd = L"powershell -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File \""
         + script.wstring() + L"\"";
     std::vector<wchar_t> mutableCmd(cmd.begin(), cmd.end());
